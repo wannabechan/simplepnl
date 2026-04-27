@@ -39,6 +39,8 @@ interface StoreRecord {
   };
   categorySales: CategorySales[];
   manualRevenueEntries: ManualRevenueEntry[];
+  uploadedSalesSummaryFileName?: string;
+  uploadedCategorySalesFileName?: string;
   inventory: {
     menu: string;
     beverage: string;
@@ -56,11 +58,20 @@ interface CardStatementRow {
   assignedAccount: string;
 }
 
+interface CardStatementFile {
+  id: string;
+  fileName: string;
+  rows: CardStatementRow[];
+}
+
 interface MonthRecord {
   id: string;
   label: string;
   stores: StoreRecord[];
-  cardStatements: CardStatementRow[];
+  cardStatementFiles: CardStatementFile[];
+  purchaseTaxInvoiceFileName?: string;
+  purchaseInvoiceFileName?: string;
+  purchaseEvidenceFileName?: string;
 }
 
 const APP_STATE_ID = "simplepnl-main-v2";
@@ -159,19 +170,48 @@ const normalizeStore = (store: StoreRecord): StoreRecord => ({
   manualRevenueEntries: Array.isArray(store.manualRevenueEntries) ? store.manualRevenueEntries : [],
 });
 
+const migrateMonthRecord = (raw: Record<string, unknown>): MonthRecord => {
+  const stores = Array.isArray(raw.stores) ? (raw.stores as StoreRecord[]).map((s) => normalizeStore(s)) : [];
+  const label = typeof raw.label === "string" ? raw.label : "";
+  const id = typeof raw.id === "string" ? raw.id : nowId();
+
+  if (Array.isArray(raw.cardStatementFiles)) {
+    const cardStatementFiles = (raw.cardStatementFiles as Partial<CardStatementFile>[]).map((f) => ({
+      id: typeof f.id === "string" ? f.id : nowId(),
+      fileName: typeof f.fileName === "string" ? f.fileName : "파일",
+      rows: Array.isArray(f.rows) ? (f.rows as CardStatementRow[]) : [],
+    }));
+    return {
+      id,
+      label,
+      stores,
+      cardStatementFiles,
+      purchaseTaxInvoiceFileName: typeof raw.purchaseTaxInvoiceFileName === "string" ? raw.purchaseTaxInvoiceFileName : undefined,
+      purchaseInvoiceFileName: typeof raw.purchaseInvoiceFileName === "string" ? raw.purchaseInvoiceFileName : undefined,
+      purchaseEvidenceFileName: typeof raw.purchaseEvidenceFileName === "string" ? raw.purchaseEvidenceFileName : undefined,
+    };
+  }
+
+  const legacyRows = Array.isArray(raw.cardStatements) ? (raw.cardStatements as CardStatementRow[]) : [];
+  return {
+    id,
+    label,
+    stores,
+    cardStatementFiles:
+      legacyRows.length > 0
+        ? [{ id: nowId(), fileName: "카드내역서(이전)", rows: legacyRows }]
+        : [],
+    purchaseTaxInvoiceFileName: typeof raw.purchaseTaxInvoiceFileName === "string" ? raw.purchaseTaxInvoiceFileName : undefined,
+    purchaseInvoiceFileName: typeof raw.purchaseInvoiceFileName === "string" ? raw.purchaseInvoiceFileName : undefined,
+    purchaseEvidenceFileName: typeof raw.purchaseEvidenceFileName === "string" ? raw.purchaseEvidenceFileName : undefined,
+  };
+};
+
 const sanitizeMonths = (value: unknown): MonthRecord[] => {
   if (!Array.isArray(value)) return [];
-  const valid = value.filter(
-    (item) =>
-      item &&
-      typeof item === "object" &&
-      Array.isArray((item as { stores?: unknown }).stores) &&
-      Array.isArray((item as { cardStatements?: unknown }).cardStatements),
-  ) as MonthRecord[];
-  return valid.map((month) => ({
-    ...month,
-    stores: month.stores.map((store) => normalizeStore(store)),
-  }));
+  return value
+    .filter((item) => item && typeof item === "object" && Array.isArray((item as { stores?: unknown }).stores))
+    .map((item) => migrateMonthRecord(item as Record<string, unknown>));
 };
 
 const loadState = async (): Promise<MonthRecord[]> => {
@@ -204,6 +244,8 @@ const emptyStore = (name: string): StoreRecord => ({
   salesSummary: { cashSales: 0, cardSales: 0 },
   categorySales: [],
   manualRevenueEntries: [],
+  uploadedSalesSummaryFileName: undefined,
+  uploadedCategorySalesFileName: undefined,
   inventory: { menu: "", beverage: "" },
   expenses: [],
 });
@@ -232,6 +274,7 @@ const App = () => {
     amount: "",
     note: "",
   });
+  const [selectedCardStatementFileId, setSelectedCardStatementFileId] = useState<string | null>(null);
 
   useEffect(() => {
     const run = async () => {
@@ -247,6 +290,18 @@ const App = () => {
     };
     void run();
   }, []);
+
+  useEffect(() => {
+    const month = months.find((m) => m.id === activeMonthId);
+    if (!month?.cardStatementFiles.length) {
+      setSelectedCardStatementFileId(null);
+      return;
+    }
+    setSelectedCardStatementFileId((prev) => {
+      if (prev && month.cardStatementFiles.some((f) => f.id === prev)) return prev;
+      return month.cardStatementFiles[0]?.id ?? null;
+    });
+  }, [activeMonthId, months]);
 
   const saveNow = async () => {
     setSaveStatus("saving");
@@ -290,7 +345,12 @@ const App = () => {
 
   const createMonth = () => {
     if (!monthLabel.trim()) return;
-    const month: MonthRecord = { id: nowId(), label: monthLabel.trim(), stores: [], cardStatements: [] };
+    const month: MonthRecord = {
+      id: nowId(),
+      label: monthLabel.trim(),
+      stores: [],
+      cardStatementFiles: [],
+    };
     setMonths((prev) => [...prev, month]);
     setActiveMonthId(month.id);
     setActiveStoreId(null);
@@ -347,12 +407,18 @@ const App = () => {
       return {
         ...month,
         stores,
-        cardStatements: month.cardStatements.map((row) =>
-          row.assignedStoreId === storeId ? { ...row, assignedStoreId: "" } : row,
-        ),
+        cardStatementFiles: month.cardStatementFiles.map((file) => ({
+          ...file,
+          rows: file.rows.map((row) =>
+            row.assignedStoreId === storeId ? { ...row, assignedStoreId: "" } : row,
+          ),
+        })),
       };
     });
   };
+
+  const allCardStatementRows = (month: MonthRecord) =>
+    month.cardStatementFiles.flatMap((file) => file.rows);
 
   const rebuildCardExpenses = (month: MonthRecord): MonthRecord => {
     const stores = month.stores.map((store) => ({
@@ -360,7 +426,7 @@ const App = () => {
       expenses: store.expenses.filter((expense) => expense.source !== "cardStatement"),
     }));
 
-    month.cardStatements.forEach((row) => {
+    allCardStatementRows(month).forEach((row) => {
       if (!row.assignedStoreId) return;
       const target = stores.find((store) => store.id === row.assignedStoreId);
       if (!target) return;
@@ -416,40 +482,65 @@ const App = () => {
   };
 
   const onUploadCardStatements = async (files: FileList | null) => {
-    if (!files) return;
-    if (activeMonth?.cardStatements.length && !window.confirm("기존 카드내역서 데이터와 설정을 삭제하고 다시 업로드하시겠습니까?")) {
+    if (!files || !activeMonth) return;
+    const fileList = Array.from(files);
+    if (fileList.length === 0) return;
+    if (
+      activeMonth.cardStatementFiles.length > 0 &&
+      !window.confirm("기존 카드내역서 파일·행별 설정을 모두 지우고 새로 업로드하시겠습니까?")
+    ) {
       return;
     }
-    const allRows: CardStatementRow[] = [];
-    const fileList = Array.from(files);
+    const newFiles: CardStatementFile[] = [];
     for (const file of fileList) {
-      const rows = await parseFileRows(file);
-      parseCardRows(rows).forEach((row) => {
-        allRows.push({
-          id: nowId(),
-          date: row.date,
-          vendor: row.vendor,
-          amount: row.amount,
-          rawCategory: row.rawCategory,
-          assignedStoreId: activeMonth?.stores[0]?.id ?? "",
-          assignedAccount: inferAccount(`${row.vendor} ${row.rawCategory}`),
-        });
-      });
+      const sheetRows = await parseFileRows(file);
+      const rows: CardStatementRow[] = parseCardRows(sheetRows).map((row) => ({
+        id: nowId(),
+        date: row.date,
+        vendor: row.vendor,
+        amount: row.amount,
+        rawCategory: row.rawCategory,
+        assignedStoreId: activeMonth.stores[0]?.id ?? "",
+        assignedAccount: inferAccount(`${row.vendor} ${row.rawCategory}`),
+      }));
+      newFiles.push({ id: nowId(), fileName: file.name, rows });
     }
-    updateMonth((month) => rebuildCardExpenses({ ...month, cardStatements: allRows }));
+    updateMonth((month) => {
+      const next: MonthRecord = { ...month, cardStatementFiles: newFiles };
+      return rebuildCardExpenses(next);
+    });
+    setSelectedCardStatementFileId(newFiles[0]?.id ?? null);
   };
 
   const onUploadPurchaseDocs = async (file: File, evidenceType: EvidenceType) => {
     const rows = await parseFileRows(file);
     const parsed = parsePurchaseRows(rows);
-    updateMonth((month) => applyPurchaseEvidence(month, evidenceType, parsed));
+    const fileName = file.name;
+    updateMonth((month) => {
+      const withEvidence = applyPurchaseEvidence(month, evidenceType, parsed);
+      if (evidenceType === "taxInvoice") return { ...withEvidence, purchaseTaxInvoiceFileName: fileName };
+      if (evidenceType === "invoice") return { ...withEvidence, purchaseInvoiceFileName: fileName };
+      return { ...withEvidence, purchaseEvidenceFileName: fileName };
+    });
   };
 
-  const updateCardStatementRow = (rowId: string, field: "assignedStoreId" | "assignedAccount", value: string) => {
+  const updateCardStatementRow = (
+    fileId: string,
+    rowId: string,
+    field: "assignedStoreId" | "assignedAccount",
+    value: string,
+  ) => {
     updateMonth((month) => {
-      const next = {
+      const next: MonthRecord = {
         ...month,
-        cardStatements: month.cardStatements.map((row) => (row.id === rowId ? { ...row, [field]: value } : row)),
+        cardStatementFiles: month.cardStatementFiles.map((file) =>
+          file.id !== fileId
+            ? file
+            : {
+                ...file,
+                rows: file.rows.map((row) => (row.id === rowId ? { ...row, [field]: value } : row)),
+              },
+        ),
       };
       return rebuildCardExpenses(next);
     });
@@ -459,7 +550,12 @@ const App = () => {
     const rows = await parseFileRows(file);
     const cashSales = rows.reduce((sum, row) => sum + toNumber(getCell(row, ["현금", "cash"])), 0);
     const cardSales = rows.reduce((sum, row) => sum + toNumber(getCell(row, ["카드", "card"])), 0);
-    updateStore((store) => ({ ...store, salesSummary: { cashSales, cardSales } }));
+    const fileName = file.name;
+    updateStore((store) => ({
+      ...store,
+      salesSummary: { cashSales, cardSales },
+      uploadedSalesSummaryFileName: fileName,
+    }));
   };
 
   const onUploadCategorySales = async (file: File) => {
@@ -470,7 +566,8 @@ const App = () => {
         amount: toNumber(getCell(row, ["매출", "금액", "amount"])),
       }))
       .filter((item) => item.category && item.amount > 0);
-    updateStore((store) => ({ ...store, categorySales }));
+    const fileName = file.name;
+    updateStore((store) => ({ ...store, categorySales, uploadedCategorySalesFileName: fileName }));
   };
 
   const addManualExpense = () => {
@@ -539,6 +636,11 @@ const App = () => {
   const totalExpense = allMonthExpenses.reduce((sum, item) => sum + item.amount, 0);
   const operatingProfit = totalSales - totalExpense;
 
+  const selectedCardStatementFile = useMemo(() => {
+    if (!activeMonth || !selectedCardStatementFileId) return null;
+    return activeMonth.cardStatementFiles.find((f) => f.id === selectedCardStatementFileId) ?? null;
+  }, [activeMonth, selectedCardStatementFileId]);
+
   return (
     <main className="layout">
       <section className="panel">
@@ -586,14 +688,86 @@ const App = () => {
           <h2>{activeMonth.label} 데이터 입력</h2>
 
           <h3>생성월 전체 영향 입력</h3>
-          <div className="line line-2">
-            <label className="uploader">
-              당월 카드내역서 업로드 (복수 가능)
-              <input type="file" multiple accept=".xlsx,.xls,.csv" onChange={(e) => void onUploadCardStatements(e.target.files)} />
-            </label>
+          <div className="line line-2 card-statement-split">
             <div className="uploader">
-              카드내역서 행별 설정은 아래 테이블에서 처리
-              <p className="muted">재업로드 시 기존 카드내역서 데이터/분배/계정 설정이 삭제됩니다.</p>
+              <div className="uploader-inline">
+                당월 카드내역서 업로드 (복수 가능)
+                <input type="file" multiple accept=".xlsx,.xls,.csv" onChange={(e) => void onUploadCardStatements(e.target.files)} />
+              </div>
+              <p className="muted small">이미 파일이 있으면 새로 업로드 시 기존 목록·행별 설정이 모두 교체됩니다.</p>
+              {activeMonth.cardStatementFiles.length > 0 && (
+                <ul className="uploaded-file-list">
+                  {activeMonth.cardStatementFiles.map((file) => (
+                    <li key={file.id}>
+                      <button
+                        type="button"
+                        className={file.id === selectedCardStatementFileId ? "file-pick active" : "file-pick"}
+                        onClick={() => setSelectedCardStatementFileId(file.id)}
+                      >
+                        {file.fileName}
+                        <span className="muted small"> ({file.rows.length}건)</span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+            <div className="uploader card-statement-panel">
+              <strong>카드내역서 행별 설정</strong>
+              <p className="muted small">왼쪽에서 파일을 선택하면 이 영역에 해당 파일의 행이 표시됩니다. 설정 후 하단 저장으로 반영하세요.</p>
+              {selectedCardStatementFile ? (
+                <table className="nested-table">
+                  <thead>
+                    <tr>
+                      <th>일자</th>
+                      <th>가맹점</th>
+                      <th>공급가액</th>
+                      <th>매장 할당</th>
+                      <th>계정</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {selectedCardStatementFile.rows.map((row) => (
+                      <tr key={row.id}>
+                        <td>{row.date}</td>
+                        <td>{row.vendor}</td>
+                        <td>{money.format(row.amount)}</td>
+                        <td>
+                          <select
+                            value={row.assignedStoreId}
+                            onChange={(e) =>
+                              updateCardStatementRow(selectedCardStatementFile.id, row.id, "assignedStoreId", e.target.value)
+                            }
+                          >
+                            <option value="">미할당</option>
+                            {activeMonth.stores.map((store) => (
+                              <option key={store.id} value={store.id}>
+                                {store.name}
+                              </option>
+                            ))}
+                          </select>
+                        </td>
+                        <td>
+                          <select
+                            value={row.assignedAccount}
+                            onChange={(e) =>
+                              updateCardStatementRow(selectedCardStatementFile.id, row.id, "assignedAccount", e.target.value)
+                            }
+                          >
+                            {EXPENSE_CATEGORIES.map((category) => (
+                              <option key={category} value={category}>
+                                {category}
+                              </option>
+                            ))}
+                          </select>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              ) : (
+                <p className="muted">업로드된 카드내역서가 없거나, 왼쪽에서 파일을 선택해 주세요.</p>
+              )}
             </div>
           </div>
 
@@ -601,67 +775,25 @@ const App = () => {
             <label className="uploader">
               매입세금계산서 업로드
               <input type="file" accept=".xlsx,.xls,.csv" onChange={(e) => e.target.files?.[0] && void onUploadPurchaseDocs(e.target.files[0], "taxInvoice")} />
+              {activeMonth.purchaseTaxInvoiceFileName && (
+                <span className="uploaded-file-name">{activeMonth.purchaseTaxInvoiceFileName}</span>
+              )}
             </label>
             <label className="uploader">
               매입계산서 업로드
               <input type="file" accept=".xlsx,.xls,.csv" onChange={(e) => e.target.files?.[0] && void onUploadPurchaseDocs(e.target.files[0], "invoice")} />
+              {activeMonth.purchaseInvoiceFileName && (
+                <span className="uploaded-file-name">{activeMonth.purchaseInvoiceFileName}</span>
+              )}
             </label>
             <label className="uploader">
               매입증빙내역 업로드
               <input type="file" accept=".xlsx,.xls,.csv" onChange={(e) => e.target.files?.[0] && void onUploadPurchaseDocs(e.target.files[0], "otherEvidence")} />
+              {activeMonth.purchaseEvidenceFileName && (
+                <span className="uploaded-file-name">{activeMonth.purchaseEvidenceFileName}</span>
+              )}
             </label>
           </div>
-
-          {activeMonth.cardStatements.length > 0 && (
-            <>
-              <h3>당월 카드내역서 행별 비용 분배/계정 설정</h3>
-              <table>
-                <thead>
-                  <tr>
-                    <th>일자</th>
-                    <th>가맹점</th>
-                    <th>공급가액</th>
-                    <th>매장 할당</th>
-                    <th>계정</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {activeMonth.cardStatements.map((row) => (
-                    <tr key={row.id}>
-                      <td>{row.date}</td>
-                      <td>{row.vendor}</td>
-                      <td>{money.format(row.amount)}</td>
-                      <td>
-                        <select
-                          value={row.assignedStoreId}
-                          onChange={(e) => updateCardStatementRow(row.id, "assignedStoreId", e.target.value)}
-                        >
-                          <option value="">미할당</option>
-                          {activeMonth.stores.map((store) => (
-                            <option key={store.id} value={store.id}>
-                              {store.name}
-                            </option>
-                          ))}
-                        </select>
-                      </td>
-                      <td>
-                        <select
-                          value={row.assignedAccount}
-                          onChange={(e) => updateCardStatementRow(row.id, "assignedAccount", e.target.value)}
-                        >
-                          {EXPENSE_CATEGORIES.map((category) => (
-                            <option key={category} value={category}>
-                              {category}
-                            </option>
-                          ))}
-                        </select>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </>
-          )}
 
           <div className="save-row">
             <button type="button" className="btn-save" onClick={() => void saveNow()}>
@@ -724,10 +856,16 @@ const App = () => {
                 <label className="uploader">
                   매출표 업로드 (현금/카드 요약)
                   <input type="file" accept=".xlsx,.xls,.csv" onChange={(e) => e.target.files?.[0] && void onUploadSalesSummary(e.target.files[0])} />
+                  {activeStore.uploadedSalesSummaryFileName && (
+                    <span className="uploaded-file-name">{activeStore.uploadedSalesSummaryFileName}</span>
+                  )}
                 </label>
                 <label className="uploader">
                   매출상품분석표 업로드 (카테고리 매출)
                   <input type="file" accept=".xlsx,.xls,.csv" onChange={(e) => e.target.files?.[0] && void onUploadCategorySales(e.target.files[0])} />
+                  {activeStore.uploadedCategorySalesFileName && (
+                    <span className="uploaded-file-name">{activeStore.uploadedCategorySalesFileName}</span>
+                  )}
                 </label>
               </div>
 
