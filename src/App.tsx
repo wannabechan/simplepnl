@@ -2,12 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import * as XLSX from "xlsx";
 
 type EvidenceType = "taxInvoice" | "invoice" | "otherEvidence" | "cardSlip";
-type UploadedDocType =
-  | "cardPayments"
-  | "purchaseTaxInvoice"
-  | "purchaseInvoice"
-  | "purchaseEvidence"
-  | "cardStatement";
+type ExpenseSource = "manual" | "cardStatement" | "purchaseAuto";
 
 interface CategorySales {
   category: string;
@@ -21,12 +16,13 @@ interface Expense {
   category: string;
   amount: number;
   note: string;
+  source: ExpenseSource;
   evidence: Record<EvidenceType, boolean>;
 }
 
-interface MonthRecord {
+interface StoreRecord {
   id: string;
-  label: string;
+  name: string;
   salesSummary: {
     cashSales: number;
     cardSales: number;
@@ -37,16 +33,31 @@ interface MonthRecord {
     beverage: string;
   };
   expenses: Expense[];
-  uploadedDocs: Record<UploadedDocType, number>;
 }
 
-interface Store {
+interface CardStatementRow {
   id: string;
-  name: string;
-  months: MonthRecord[];
+  date: string;
+  vendor: string;
+  amount: number;
+  rawCategory: string;
+  assignedStoreId: string;
+  assignedAccount: string;
 }
 
-const APP_STATE_ID = "simplepnl-main";
+interface MonthRecord {
+  id: string;
+  label: string;
+  stores: StoreRecord[];
+  cardStatements: CardStatementRow[];
+}
+
+const APP_STATE_ID = "simplepnl-main-v2";
+const money = new Intl.NumberFormat("ko-KR");
+const nowId = () => `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+const today = () => new Date().toISOString().slice(0, 10);
+const normalize = (value: string) => value.trim().toLowerCase().replace(/\s+/g, "");
+
 const EXPENSE_CATEGORIES = [
   "광고홍보",
   "교통비",
@@ -70,12 +81,17 @@ const EXPENSE_CATEGORIES = [
   "saas",
 ];
 
-const money = new Intl.NumberFormat("ko-KR");
-
-const nowId = () => `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-const today = () => new Date().toISOString().slice(0, 10);
-
-const normalize = (value: string) => value.trim().toLowerCase().replace(/\s+/g, "");
+const inferAccount = (text: string) => {
+  const n = normalize(text);
+  if (n.includes("택시") || n.includes("교통")) return "교통비";
+  if (n.includes("식자재")) return "식자재";
+  if (n.includes("광고")) return "광고홍보";
+  if (n.includes("인건")) return "인건비";
+  if (n.includes("술") || n.includes("주류")) return "주류";
+  if (n.includes("음료")) return "음료";
+  if (n.includes("전기") || n.includes("가스") || n.includes("수도")) return "수도광열비";
+  return "기타";
+};
 
 const toNumber = (value: unknown): number => {
   if (typeof value === "number") return Number.isFinite(value) ? value : 0;
@@ -102,52 +118,60 @@ const parseFileRows = async (file: File): Promise<Record<string, unknown>[]> => 
 
 const parsePurchaseRows = (rows: Record<string, unknown>[]) =>
   rows
-    .map((row) => {
-      const vendor = String(getCell(row, ["거래처", "상호", "vendor", "공급자"]) ?? "").trim();
-      const amount = toNumber(getCell(row, ["공급가액", "금액", "amount"]));
-      const category = String(getCell(row, ["품목", "구분", "category"]) ?? "미분류").trim();
-      const date = String(getCell(row, ["일자", "작성일", "date"]) ?? "").trim();
-      return { vendor, amount, category, date };
-    })
+    .map((row) => ({
+      vendor: String(getCell(row, ["거래처", "상호", "vendor", "공급자"]) ?? "").trim(),
+      amount: toNumber(getCell(row, ["공급가액", "금액", "amount"])),
+      category: String(getCell(row, ["품목", "구분", "category"]) ?? "미분류").trim(),
+      date: String(getCell(row, ["일자", "작성일", "date"]) ?? "").trim(),
+    }))
     .filter((item) => item.vendor || item.amount > 0);
 
-const parseCardStatementRows = (rows: Record<string, unknown>[]) =>
+const parseCardRows = (rows: Record<string, unknown>[]) =>
   rows
     .map((row) => {
       const vendor = String(getCell(row, ["가맹점", "사용처", "상호", "vendor"]) ?? "").trim();
-      const amount = toNumber(getCell(row, ["이용금액", "결제금액", "공급가액", "amount"]));
-      const category = String(getCell(row, ["업종", "분류", "category"]) ?? "카드비용").trim();
+      const rawCategory = String(getCell(row, ["업종", "분류", "category"]) ?? "").trim();
+      const amount = toNumber(getCell(row, ["공급가액", "이용금액", "결제금액", "amount"]));
       const date = String(getCell(row, ["이용일", "승인일", "date"]) ?? "").trim();
-      return { vendor, amount, category, date };
+      return { vendor, rawCategory, amount, date };
     })
     .filter((item) => item.vendor || item.amount > 0);
 
-const readLocalState = (): Store[] => {
+const readLocalState = (): MonthRecord[] => {
   const raw = localStorage.getItem(APP_STATE_ID);
   if (!raw) return [];
-  return JSON.parse(raw) as Store[];
+  return JSON.parse(raw) as MonthRecord[];
 };
 
-const loadState = async (): Promise<Store[]> => {
+const sanitizeMonths = (value: unknown): MonthRecord[] => {
+  if (!Array.isArray(value)) return [];
+  const valid = value.filter(
+    (item) =>
+      item &&
+      typeof item === "object" &&
+      Array.isArray((item as { stores?: unknown }).stores) &&
+      Array.isArray((item as { cardStatements?: unknown }).cardStatements),
+  );
+  return valid as MonthRecord[];
+};
+
+const loadState = async (): Promise<MonthRecord[]> => {
   try {
     const response = await fetch("/api/state");
-    if (!response.ok) {
-      throw new Error(`API load failed: ${response.status}`);
-    }
-    const payload = (await response.json()) as { data?: Store[] };
-    return payload.data ?? [];
+    if (!response.ok) throw new Error("load failed");
+    const payload = (await response.json()) as { data?: MonthRecord[] };
+    return sanitizeMonths(payload.data);
   } catch {
-    return readLocalState();
+    return sanitizeMonths(readLocalState());
   }
 };
 
-const saveState = async (stores: Store[]) => {
-  localStorage.setItem(APP_STATE_ID, JSON.stringify(stores));
-
+const saveState = async (months: MonthRecord[]) => {
+  localStorage.setItem(APP_STATE_ID, JSON.stringify(months));
   const response = await fetch("/api/state", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ data: stores }),
+    body: JSON.stringify({ data: months }),
   });
   if (!response.ok) {
     const details = await response.text();
@@ -155,15 +179,24 @@ const saveState = async (stores: Store[]) => {
   }
 };
 
+const emptyStore = (name: string): StoreRecord => ({
+  id: nowId(),
+  name,
+  salesSummary: { cashSales: 0, cardSales: 0 },
+  categorySales: [],
+  inventory: { menu: "", beverage: "" },
+  expenses: [],
+});
+
 const App = () => {
-  const [stores, setStores] = useState<Store[]>([]);
+  const [months, setMonths] = useState<MonthRecord[]>([]);
   const [bootstrapped, setBootstrapped] = useState(false);
   const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [syncError, setSyncError] = useState("");
-  const [storeName, setStoreName] = useState("");
-  const [activeStoreId, setActiveStoreId] = useState<string | null>(null);
   const [monthLabel, setMonthLabel] = useState("");
   const [activeMonthId, setActiveMonthId] = useState<string | null>(null);
+  const [storeName, setStoreName] = useState("");
+  const [activeStoreId, setActiveStoreId] = useState<string | null>(null);
   const [manualExpense, setManualExpense] = useState({
     date: today(),
     vendor: "",
@@ -176,9 +209,9 @@ const App = () => {
     const run = async () => {
       try {
         const parsed = await loadState();
-        setStores(parsed);
-        setActiveStoreId(parsed[0]?.id ?? null);
-        setActiveMonthId(parsed[0]?.months[0]?.id ?? null);
+        setMonths(parsed);
+        setActiveMonthId(parsed[0]?.id ?? null);
+        setActiveStoreId(parsed[0]?.stores[0]?.id ?? null);
       } catch (error) {
         const message = error instanceof Error ? error.message : "Unknown load error";
         setSyncError(message);
@@ -193,7 +226,7 @@ const App = () => {
     if (!bootstrapped) return;
     const timer = window.setTimeout(() => {
       setSaveStatus("saving");
-      saveState(stores)
+      saveState(months)
         .then(() => {
           setSaveStatus("saved");
           setSyncError("");
@@ -203,140 +236,162 @@ const App = () => {
           setSaveStatus("error");
           setSyncError(message);
         });
-    }, 350);
+    }, 300);
     return () => window.clearTimeout(timer);
-  }, [stores, bootstrapped]);
+  }, [months, bootstrapped]);
 
-  const activeStore = useMemo(
-    () => stores.find((store) => store.id === activeStoreId) ?? null,
-    [stores, activeStoreId],
-  );
   const activeMonth = useMemo(
-    () => activeStore?.months.find((month) => month.id === activeMonthId) ?? null,
-    [activeStore, activeMonthId],
+    () => months.find((month) => month.id === activeMonthId) ?? null,
+    [months, activeMonthId],
+  );
+  const activeStore = useMemo(
+    () => activeMonth?.stores.find((store) => store.id === activeStoreId) ?? null,
+    [activeMonth, activeStoreId],
   );
 
-  const upsertMonth = (mutator: (month: MonthRecord) => MonthRecord) => {
-    if (!activeStoreId || !activeMonthId) return;
-    setStores((prev) =>
-      prev.map((store) => {
-        if (store.id !== activeStoreId) return store;
+  const updateMonth = (mutator: (month: MonthRecord) => MonthRecord) => {
+    if (!activeMonthId) return;
+    setMonths((prev) => prev.map((month) => (month.id === activeMonthId ? mutator(month) : month)));
+  };
+
+  const updateStore = (mutator: (store: StoreRecord) => StoreRecord) => {
+    if (!activeMonthId || !activeStoreId) return;
+    setMonths((prev) =>
+      prev.map((month) => {
+        if (month.id !== activeMonthId) return month;
         return {
-          ...store,
-          months: store.months.map((month) => (month.id === activeMonthId ? mutator(month) : month)),
+          ...month,
+          stores: month.stores.map((store) => (store.id === activeStoreId ? mutator(store) : store)),
         };
       }),
     );
   };
 
-  const createStore = () => {
-    if (!storeName.trim()) return;
-    const newStore: Store = { id: nowId(), name: storeName.trim(), months: [] };
-    setStores((prev) => [...prev, newStore]);
-    setActiveStoreId(newStore.id);
-    setActiveMonthId(null);
-    setStoreName("");
-  };
-
   const createMonth = () => {
-    if (!activeStoreId || !monthLabel.trim()) return;
-    const newMonth: MonthRecord = {
-      id: nowId(),
-      label: monthLabel.trim(),
-      salesSummary: { cashSales: 0, cardSales: 0 },
-      categorySales: [],
-      inventory: { menu: "", beverage: "" },
-      expenses: [],
-      uploadedDocs: {
-        cardPayments: 0,
-        purchaseTaxInvoice: 0,
-        purchaseInvoice: 0,
-        purchaseEvidence: 0,
-        cardStatement: 0,
-      },
-    };
-    setStores((prev) =>
-      prev.map((store) =>
-        store.id === activeStoreId ? { ...store, months: [...store.months, newMonth] } : store,
-      ),
-    );
-    setActiveMonthId(newMonth.id);
+    if (!monthLabel.trim()) return;
+    const month: MonthRecord = { id: nowId(), label: monthLabel.trim(), stores: [], cardStatements: [] };
+    setMonths((prev) => [...prev, month]);
+    setActiveMonthId(month.id);
+    setActiveStoreId(null);
     setMonthLabel("");
   };
 
-  const addManualExpense = () => {
-    if (!manualExpense.vendor.trim() || !manualExpense.amount.trim()) return;
-    upsertMonth((month) => ({
-      ...month,
-      expenses: [
-        ...month.expenses,
-        {
-          id: nowId(),
-          date: manualExpense.date,
-          vendor: manualExpense.vendor.trim(),
-          category: manualExpense.category.trim() || "기타",
-          amount: toNumber(manualExpense.amount),
-          note: manualExpense.note.trim(),
-          evidence: { taxInvoice: false, invoice: false, otherEvidence: false, cardSlip: false },
-        },
-      ],
-    }));
-    setManualExpense({ date: today(), vendor: "", category: "기타", amount: "", note: "" });
+  const createStoreInMonth = () => {
+    if (!storeName.trim()) return;
+    const nextStore = emptyStore(storeName.trim());
+    updateMonth((month) => {
+      return { ...month, stores: [...month.stores, nextStore] };
+    });
+    setActiveStoreId(nextStore.id);
+    setStoreName("");
   };
 
-  const applyEvidenceRows = (
-    month: MonthRecord,
-    rows: { vendor: string; amount: number; category: string; date: string }[],
-    type: EvidenceType,
-    docType: UploadedDocType,
-  ) => {
-    const nextExpenses = [...month.expenses];
+  const rebuildCardExpenses = (month: MonthRecord): MonthRecord => {
+    const stores = month.stores.map((store) => ({
+      ...store,
+      expenses: store.expenses.filter((expense) => expense.source !== "cardStatement"),
+    }));
 
-    rows.forEach((row) => {
-      const match = nextExpenses.find((expense) => {
-        const sameVendor =
-          row.vendor && expense.vendor ? normalize(expense.vendor) === normalize(row.vendor) : false;
-        const sameAmount = row.amount > 0 && Math.abs(expense.amount - row.amount) < 1;
-        return sameAmount && (sameVendor || !row.vendor);
+    month.cardStatements.forEach((row) => {
+      if (!row.assignedStoreId) return;
+      const target = stores.find((store) => store.id === row.assignedStoreId);
+      if (!target) return;
+      target.expenses.push({
+        id: row.id,
+        date: row.date,
+        vendor: row.vendor,
+        category: row.assignedAccount,
+        amount: row.amount,
+        note: "당월 카드내역서 자동 등록",
+        source: "cardStatement",
+        evidence: { taxInvoice: false, invoice: false, otherEvidence: false, cardSlip: true },
       });
+    });
 
-      if (match) {
-        match.evidence[type] = true;
-        if (!match.date && row.date) match.date = row.date;
-        if (match.category === "기타" && row.category) match.category = row.category;
-      } else {
-        nextExpenses.push({
+    return { ...month, stores };
+  };
+
+  const applyPurchaseEvidence = (month: MonthRecord, evidenceType: EvidenceType, rows: ReturnType<typeof parsePurchaseRows>) => {
+    const stores = month.stores.map((store) => ({ ...store, expenses: [...store.expenses] }));
+    rows.forEach((row) => {
+      let matched = false;
+      stores.forEach((store) => {
+        const expense = store.expenses.find((item) => {
+          const sameAmount = Math.abs(item.amount - row.amount) < 1;
+          const sameVendor = row.vendor && item.vendor ? normalize(item.vendor) === normalize(row.vendor) : false;
+          return sameAmount && (sameVendor || !row.vendor);
+        });
+        if (expense) {
+          expense.evidence[evidenceType] = true;
+          matched = true;
+        }
+      });
+      if (!matched && stores[0]) {
+        stores[0].expenses.push({
           id: nowId(),
           date: row.date,
-          vendor: row.vendor || `${docType}-자동등록`,
-          category: row.category || "자동등록",
+          vendor: row.vendor || "자동등록",
+          category: row.category || "기타",
           amount: row.amount,
-          note: `${docType} 자동 등록`,
+          note: "매입증빙 자동등록",
+          source: "purchaseAuto",
           evidence: {
-            taxInvoice: type === "taxInvoice",
-            invoice: type === "invoice",
-            otherEvidence: type === "otherEvidence",
-            cardSlip: type === "cardSlip",
+            taxInvoice: evidenceType === "taxInvoice",
+            invoice: evidenceType === "invoice",
+            otherEvidence: evidenceType === "otherEvidence",
+            cardSlip: false,
           },
         });
       }
     });
+    return { ...month, stores };
+  };
 
-    return {
-      ...month,
-      expenses: nextExpenses,
-      uploadedDocs: { ...month.uploadedDocs, [docType]: month.uploadedDocs[docType] + 1 },
-    };
+  const onUploadCardStatements = async (files: FileList | null) => {
+    if (!files) return;
+    if (activeMonth?.cardStatements.length && !window.confirm("기존 카드내역서 데이터와 설정을 삭제하고 다시 업로드하시겠습니까?")) {
+      return;
+    }
+    const allRows: CardStatementRow[] = [];
+    const fileList = Array.from(files);
+    for (const file of fileList) {
+      const rows = await parseFileRows(file);
+      parseCardRows(rows).forEach((row) => {
+        allRows.push({
+          id: nowId(),
+          date: row.date,
+          vendor: row.vendor,
+          amount: row.amount,
+          rawCategory: row.rawCategory,
+          assignedStoreId: activeMonth?.stores[0]?.id ?? "",
+          assignedAccount: inferAccount(`${row.vendor} ${row.rawCategory}`),
+        });
+      });
+    }
+    updateMonth((month) => rebuildCardExpenses({ ...month, cardStatements: allRows }));
+  };
+
+  const onUploadPurchaseDocs = async (file: File, evidenceType: EvidenceType) => {
+    const rows = await parseFileRows(file);
+    const parsed = parsePurchaseRows(rows);
+    updateMonth((month) => applyPurchaseEvidence(month, evidenceType, parsed));
+  };
+
+  const updateCardStatementRow = (rowId: string, field: "assignedStoreId" | "assignedAccount", value: string) => {
+    updateMonth((month) => {
+      const next = {
+        ...month,
+        cardStatements: month.cardStatements.map((row) => (row.id === rowId ? { ...row, [field]: value } : row)),
+      };
+      return rebuildCardExpenses(next);
+    });
   };
 
   const onUploadSalesSummary = async (file: File) => {
     const rows = await parseFileRows(file);
     const cashSales = rows.reduce((sum, row) => sum + toNumber(getCell(row, ["현금", "cash"])), 0);
     const cardSales = rows.reduce((sum, row) => sum + toNumber(getCell(row, ["카드", "card"])), 0);
-    upsertMonth((month) => ({
-      ...month,
-      salesSummary: { cashSales, cardSales },
-    }));
+    updateStore((store) => ({ ...store, salesSummary: { cashSales, cardSales } }));
   };
 
   const onUploadCategorySales = async (file: File) => {
@@ -346,250 +401,263 @@ const App = () => {
         category: String(getCell(row, ["카테고리", "분류", "category"]) ?? "").trim(),
         amount: toNumber(getCell(row, ["매출", "금액", "amount"])),
       }))
-      .filter((row) => row.category && row.amount > 0);
-    upsertMonth((month) => ({ ...month, categorySales }));
+      .filter((item) => item.category && item.amount > 0);
+    updateStore((store) => ({ ...store, categorySales }));
   };
 
-  const onUploadPurchaseDocs = async (file: File, type: EvidenceType, docType: UploadedDocType) => {
-    const rows = await parseFileRows(file);
-    const data = parsePurchaseRows(rows);
-    upsertMonth((month) => applyEvidenceRows(month, data, type, docType));
+  const addManualExpense = () => {
+    if (!manualExpense.vendor.trim() || !manualExpense.amount.trim()) return;
+    updateStore((store) => ({
+      ...store,
+      expenses: [
+        ...store.expenses,
+        {
+          id: nowId(),
+          date: manualExpense.date,
+          vendor: manualExpense.vendor.trim(),
+          category: manualExpense.category,
+          amount: toNumber(manualExpense.amount),
+          note: manualExpense.note.trim(),
+          source: "manual",
+          evidence: { taxInvoice: false, invoice: false, otherEvidence: false, cardSlip: false },
+        },
+      ],
+    }));
+    setManualExpense({ date: today(), vendor: "", category: "기타", amount: "", note: "" });
   };
 
-  const onUploadCardStatements = async (files: FileList | null) => {
-    if (!files) return;
-    const list = Array.from(files);
-    for (const file of list) {
-      const rows = await parseFileRows(file);
-      const data = parseCardStatementRows(rows);
-      upsertMonth((month) => applyEvidenceRows(month, data, "cardSlip", "cardStatement"));
-    }
-  };
-
-  const totalSales = (activeMonth?.salesSummary.cashSales ?? 0) + (activeMonth?.salesSummary.cardSales ?? 0);
-  const totalExpense = activeMonth?.expenses.reduce((sum, item) => sum + item.amount, 0) ?? 0;
+  const allMonthExpenses = activeMonth?.stores.flatMap((store) => store.expenses) ?? [];
+  const totalSales = activeMonth?.stores.reduce(
+    (sum, store) => sum + store.salesSummary.cashSales + store.salesSummary.cardSales,
+    0,
+  ) ?? 0;
+  const totalExpense = allMonthExpenses.reduce((sum, item) => sum + item.amount, 0);
   const operatingProfit = totalSales - totalExpense;
 
   return (
     <main className="layout">
       <section className="panel">
-        <h1>매장 월별 손익 리포트 (공급가액 기준)</h1>
-        <p className="muted">매장과 월을 생성하고 업로드/입력하면 매출, 비용, 손익이 자동 집계됩니다.</p>
+        <h1>월별 손익 리포트 (공급가액 기준)</h1>
+        <p className="muted">구조: 월 생성 · 월 하위 매장 생성 · 월 공통 입력/매장별 입력</p>
         <p className="muted">
           저장 방식: API 영구 저장 + localStorage 캐시 / 상태:{" "}
-          {saveStatus === "saving"
-            ? "저장 중"
-            : saveStatus === "saved"
-              ? "저장 완료"
-              : saveStatus === "error"
-                ? "저장 실패"
-                : "대기"}
+          {saveStatus === "saving" ? "저장 중" : saveStatus === "saved" ? "저장 완료" : saveStatus === "error" ? "저장 실패" : "대기"}
         </p>
         {syncError && <p className="error">{syncError}</p>}
 
         <div className="row">
-          <input
-            placeholder="신규 매장명"
-            value={storeName}
-            onChange={(e) => setStoreName(e.target.value)}
-          />
-          <button onClick={createStore}>매장 생성</button>
+          <input placeholder="예: 2026-04" value={monthLabel} onChange={(e) => setMonthLabel(e.target.value)} />
+          <button onClick={createMonth}>월 생성</button>
         </div>
 
         <div className="chip-wrap">
-          {stores.map((store) => (
+          {months.map((month) => (
             <button
-              key={store.id}
-              className={store.id === activeStoreId ? "chip active" : "chip"}
+              key={month.id}
+              className={month.id === activeMonthId ? "chip active" : "chip"}
               onClick={() => {
-                setActiveStoreId(store.id);
-                setActiveMonthId(store.months[0]?.id ?? null);
+                setActiveMonthId(month.id);
+                setActiveStoreId(month.stores[0]?.id ?? null);
               }}
             >
-              {store.name}
+              {month.label}
             </button>
           ))}
         </div>
       </section>
 
-      {activeStore && (
-        <section className="panel">
-          <h2>{activeStore.name} - 월 관리</h2>
-          <div className="row">
-            <input
-              placeholder="예: 2026-04"
-              value={monthLabel}
-              onChange={(e) => setMonthLabel(e.target.value)}
-            />
-            <button onClick={createMonth}>월 생성</button>
-          </div>
-
-          <div className="chip-wrap">
-            {activeStore.months.map((month) => (
-              <button
-                key={month.id}
-                className={month.id === activeMonthId ? "chip active" : "chip"}
-                onClick={() => setActiveMonthId(month.id)}
-              >
-                {month.label}
-              </button>
-            ))}
-          </div>
-        </section>
-      )}
-
       {activeMonth && (
         <section className="panel">
           <h2>{activeMonth.label} 데이터 입력</h2>
 
+          <h3>생성월 전체 영향 입력</h3>
           <div className="line line-2">
-            <label className="uploader">
-              매출표 업로드 (현금/카드 요약)
-              <input type="file" accept=".xlsx,.xls,.csv" onChange={(e) => e.target.files?.[0] && onUploadSalesSummary(e.target.files[0])} />
-            </label>
-
-            <label className="uploader">
-              매출상품분석표 업로드 (카테고리 매출)
-              <input type="file" accept=".xlsx,.xls,.csv" onChange={(e) => e.target.files?.[0] && onUploadCategorySales(e.target.files[0])} />
-            </label>
-          </div>
-
-          <div className="line line-2">
-            <div className="uploader">
-              재고 입력
-              <input
-                placeholder="메뉴 재고"
-                value={activeMonth.inventory.menu}
-                onChange={(e) =>
-                  upsertMonth((month) => ({ ...month, inventory: { ...month.inventory, menu: e.target.value } }))
-                }
-              />
-              <input
-                placeholder="음료 재고"
-                value={activeMonth.inventory.beverage}
-                onChange={(e) =>
-                  upsertMonth((month) => ({ ...month, inventory: { ...month.inventory, beverage: e.target.value } }))
-                }
-              />
-            </div>
-
             <label className="uploader">
               당월 카드내역서 업로드 (복수 가능)
-              <input type="file" multiple accept=".xlsx,.xls,.csv" onChange={(e) => onUploadCardStatements(e.target.files)} />
+              <input type="file" multiple accept=".xlsx,.xls,.csv" onChange={(e) => void onUploadCardStatements(e.target.files)} />
             </label>
+            <div className="uploader">
+              카드내역서 행별 설정은 아래 테이블에서 처리
+              <p className="muted">재업로드 시 기존 카드내역서 데이터/분배/계정 설정이 삭제됩니다.</p>
+            </div>
           </div>
 
           <div className="line line-3">
             <label className="uploader">
               매입세금계산서 업로드
-              <input type="file" accept=".xlsx,.xls,.csv" onChange={(e) => e.target.files?.[0] && onUploadPurchaseDocs(e.target.files[0], "taxInvoice", "purchaseTaxInvoice")} />
+              <input type="file" accept=".xlsx,.xls,.csv" onChange={(e) => e.target.files?.[0] && void onUploadPurchaseDocs(e.target.files[0], "taxInvoice")} />
             </label>
-
             <label className="uploader">
               매입계산서 업로드
-              <input type="file" accept=".xlsx,.xls,.csv" onChange={(e) => e.target.files?.[0] && onUploadPurchaseDocs(e.target.files[0], "invoice", "purchaseInvoice")} />
+              <input type="file" accept=".xlsx,.xls,.csv" onChange={(e) => e.target.files?.[0] && void onUploadPurchaseDocs(e.target.files[0], "invoice")} />
             </label>
-
             <label className="uploader">
               매입증빙내역 업로드
-              <input type="file" accept=".xlsx,.xls,.csv" onChange={(e) => e.target.files?.[0] && onUploadPurchaseDocs(e.target.files[0], "otherEvidence", "purchaseEvidence")} />
+              <input type="file" accept=".xlsx,.xls,.csv" onChange={(e) => e.target.files?.[0] && void onUploadPurchaseDocs(e.target.files[0], "otherEvidence")} />
             </label>
           </div>
 
-          <div className="line line-1">
-            <div className="uploader">
-              현금 결제 비용 수동 입력
-              <input
-                type="date"
-                placeholder="일자"
-                value={manualExpense.date}
-                onChange={(e) => setManualExpense((prev) => ({ ...prev, date: e.target.value }))}
-              />
-              <input
-                placeholder="거래처"
-                value={manualExpense.vendor}
-                onChange={(e) => setManualExpense((prev) => ({ ...prev, vendor: e.target.value }))}
-              />
-              <select
-                value={manualExpense.category}
-                onChange={(e) => setManualExpense((prev) => ({ ...prev, category: e.target.value }))}
-              >
-                {EXPENSE_CATEGORIES.map((category) => (
-                  <option key={category} value={category}>
-                    {category}
-                  </option>
-                ))}
-              </select>
-              <input
-                placeholder="공급가액"
-                value={manualExpense.amount}
-                onChange={(e) => setManualExpense((prev) => ({ ...prev, amount: e.target.value }))}
-              />
-              <input
-                placeholder="비고"
-                value={manualExpense.note}
-                onChange={(e) => setManualExpense((prev) => ({ ...prev, note: e.target.value }))}
-              />
-              <button onClick={addManualExpense}>비용 추가</button>
-            </div>
-          </div>
+          {activeMonth.cardStatements.length > 0 && (
+            <>
+              <h3>당월 카드내역서 행별 비용 분배/계정 설정</h3>
+              <table>
+                <thead>
+                  <tr>
+                    <th>일자</th>
+                    <th>가맹점</th>
+                    <th>공급가액</th>
+                    <th>매장 할당</th>
+                    <th>계정</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {activeMonth.cardStatements.map((row) => (
+                    <tr key={row.id}>
+                      <td>{row.date}</td>
+                      <td>{row.vendor}</td>
+                      <td>{money.format(row.amount)}</td>
+                      <td>
+                        <select
+                          value={row.assignedStoreId}
+                          onChange={(e) => updateCardStatementRow(row.id, "assignedStoreId", e.target.value)}
+                        >
+                          <option value="">미할당</option>
+                          {activeMonth.stores.map((store) => (
+                            <option key={store.id} value={store.id}>
+                              {store.name}
+                            </option>
+                          ))}
+                        </select>
+                      </td>
+                      <td>
+                        <select
+                          value={row.assignedAccount}
+                          onChange={(e) => updateCardStatementRow(row.id, "assignedAccount", e.target.value)}
+                        >
+                          {EXPENSE_CATEGORIES.map((category) => (
+                            <option key={category} value={category}>
+                              {category}
+                            </option>
+                          ))}
+                        </select>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </>
+          )}
 
           <hr className="report-divider" />
-          <h3>매출 항목 정리</h3>
-          <div className="summary-grid">
-            <div>현금 매출 합: {money.format(activeMonth.salesSummary.cashSales)}원</div>
-            <div>카드 매출 합: {money.format(activeMonth.salesSummary.cardSales)}원</div>
-            <div>총 매출: {money.format(totalSales)}원</div>
+
+          <h3>매장별 입력 영역</h3>
+          <div className="row">
+            <input
+              placeholder="신규 매장명"
+              value={storeName}
+              onChange={(e) => setStoreName(e.target.value)}
+            />
+            <button onClick={createStoreInMonth}>매장 생성</button>
+          </div>
+          <div className="chip-wrap">
+            {activeMonth.stores.map((store) => (
+              <button
+                key={store.id}
+                className={store.id === activeStoreId ? "chip active" : "chip"}
+                onClick={() => setActiveStoreId(store.id)}
+              >
+                {store.name}
+              </button>
+            ))}
           </div>
 
-          <h3>상품 카테고리별 매출</h3>
-          <ul>
-            {activeMonth.categorySales.map((item) => (
-              <li key={`${item.category}-${item.amount}`}>
-                {item.category}: {money.format(item.amount)}원
-              </li>
-            ))}
-          </ul>
+          {activeStore && (
+            <>
+              <h3>{activeStore.name} 입력</h3>
+              <div className="line line-2">
+                <label className="uploader">
+                  매출표 업로드 (현금/카드 요약)
+                  <input type="file" accept=".xlsx,.xls,.csv" onChange={(e) => e.target.files?.[0] && void onUploadSalesSummary(e.target.files[0])} />
+                </label>
+                <label className="uploader">
+                  매출상품분석표 업로드 (카테고리 매출)
+                  <input type="file" accept=".xlsx,.xls,.csv" onChange={(e) => e.target.files?.[0] && void onUploadCategorySales(e.target.files[0])} />
+                </label>
+              </div>
 
-          <h3>비용 항목 정리</h3>
+              <div className="line line-2">
+                <div className="uploader">
+                  재고 입력
+                  <input
+                    placeholder="메뉴 재고"
+                    value={activeStore.inventory.menu}
+                    onChange={(e) => updateStore((store) => ({ ...store, inventory: { ...store.inventory, menu: e.target.value } }))}
+                  />
+                  <input
+                    placeholder="음료 재고"
+                    value={activeStore.inventory.beverage}
+                    onChange={(e) => updateStore((store) => ({ ...store, inventory: { ...store.inventory, beverage: e.target.value } }))}
+                  />
+                </div>
+                <div className="uploader">
+                  현금 결제 비용 수동 입력
+                  <input type="date" value={manualExpense.date} onChange={(e) => setManualExpense((prev) => ({ ...prev, date: e.target.value }))} />
+                  <input placeholder="거래처" value={manualExpense.vendor} onChange={(e) => setManualExpense((prev) => ({ ...prev, vendor: e.target.value }))} />
+                  <select value={manualExpense.category} onChange={(e) => setManualExpense((prev) => ({ ...prev, category: e.target.value }))}>
+                    {EXPENSE_CATEGORIES.map((category) => (
+                      <option key={category} value={category}>
+                        {category}
+                      </option>
+                    ))}
+                  </select>
+                  <input placeholder="공급가액" value={manualExpense.amount} onChange={(e) => setManualExpense((prev) => ({ ...prev, amount: e.target.value }))} />
+                  <input placeholder="비고" value={manualExpense.note} onChange={(e) => setManualExpense((prev) => ({ ...prev, note: e.target.value }))} />
+                  <button onClick={addManualExpense}>비용 추가</button>
+                </div>
+              </div>
+            </>
+          )}
+
+          <hr className="report-divider" />
+          <h3>월 전체 손익 정리</h3>
+          <div className="summary-grid">
+            <div>월 총 매출: {money.format(totalSales)}원</div>
+            <div>월 총 비용: {money.format(totalExpense)}원</div>
+            <div className={operatingProfit >= 0 ? "profit" : "loss"}>월 영업손익: {money.format(operatingProfit)}원</div>
+          </div>
+
+          <h3>매장별 비용 항목</h3>
           <table>
             <thead>
               <tr>
+                <th>매장</th>
                 <th>일자</th>
                 <th>거래처</th>
                 <th>분류</th>
                 <th>공급가액</th>
                 <th>증빙</th>
-                <th>비고</th>
               </tr>
             </thead>
             <tbody>
-              {activeMonth.expenses.map((expense) => (
-                <tr key={expense.id}>
-                  <td>{expense.date}</td>
-                  <td>{expense.vendor}</td>
-                  <td>{expense.category}</td>
-                  <td>{money.format(expense.amount)}</td>
-                  <td>
-                    {expense.evidence.taxInvoice ? "세금계산서 " : ""}
-                    {expense.evidence.invoice ? "계산서 " : ""}
-                    {expense.evidence.otherEvidence ? "기타증빙 " : ""}
-                    {expense.evidence.cardSlip ? "카드매출전표 " : ""}
-                  </td>
-                  <td>{expense.note}</td>
-                </tr>
-              ))}
+              {activeMonth.stores.flatMap((store) =>
+                store.expenses.map((expense) => (
+                  <tr key={`${store.id}-${expense.id}`}>
+                    <td>{store.name}</td>
+                    <td>{expense.date}</td>
+                    <td>{expense.vendor}</td>
+                    <td>{expense.category}</td>
+                    <td>{money.format(expense.amount)}</td>
+                    <td>
+                      {expense.evidence.taxInvoice ? "세금계산서 " : ""}
+                      {expense.evidence.invoice ? "계산서 " : ""}
+                      {expense.evidence.otherEvidence ? "기타증빙 " : ""}
+                      {expense.evidence.cardSlip ? "카드매출전표 " : ""}
+                    </td>
+                  </tr>
+                )),
+              )}
             </tbody>
           </table>
-
-          <h3>결과 손익 정리</h3>
-          <div className="summary-grid">
-            <div>총 매출: {money.format(totalSales)}원</div>
-            <div>총 비용: {money.format(totalExpense)}원</div>
-            <div className={operatingProfit >= 0 ? "profit" : "loss"}>
-              영업손익: {money.format(operatingProfit)}원
-            </div>
-          </div>
         </section>
       )}
     </main>
