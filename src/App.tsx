@@ -195,7 +195,8 @@ const App = () => {
   const [syncError, setSyncError] = useState("");
   const [monthLabel, setMonthLabel] = useState("");
   const [activeMonthId, setActiveMonthId] = useState<string | null>(null);
-  const [storeName, setStoreName] = useState("");
+  const [storeTemplateName, setStoreTemplateName] = useState("");
+  const [customStoreName, setCustomStoreName] = useState("");
   const [activeStoreId, setActiveStoreId] = useState<string | null>(null);
   const [manualExpense, setManualExpense] = useState({
     date: today(),
@@ -277,13 +278,24 @@ const App = () => {
   };
 
   const createStoreInMonth = () => {
-    if (!storeName.trim()) return;
-    const nextStore = emptyStore(storeName.trim());
-    updateMonth((month) => {
-      return { ...month, stores: [...month.stores, nextStore] };
-    });
+    if (!activeMonth) return;
+    const pickedName =
+      storeTemplateName === "__new__" ? customStoreName.trim() : storeTemplateName.trim();
+    if (!pickedName) return;
+
+    const existing = activeMonth.stores.find(
+      (store) => normalize(store.name) === normalize(pickedName),
+    );
+    if (existing) {
+      setActiveStoreId(existing.id);
+      return;
+    }
+
+    const nextStore = emptyStore(pickedName);
+    updateMonth((month) => ({ ...month, stores: [...month.stores, nextStore] }));
     setActiveStoreId(nextStore.id);
-    setStoreName("");
+    setCustomStoreName("");
+    setStoreTemplateName("");
   };
 
   const rebuildCardExpenses = (month: MonthRecord): MonthRecord => {
@@ -427,6 +439,14 @@ const App = () => {
   };
 
   const allMonthExpenses = activeMonth?.stores.flatMap((store) => store.expenses) ?? [];
+  const previousMonthStoreOptions = useMemo(() => {
+    if (!activeMonth) return [];
+    const index = months.findIndex((month) => month.id === activeMonth.id);
+    if (index <= 0) return [];
+    const previousMonth = months[index - 1];
+    return [...new Set(previousMonth.stores.map((store) => store.name))]
+      .sort((a, b) => a.localeCompare(b, "en"));
+  }, [months, activeMonth]);
   const totalSales = activeMonth?.stores.reduce(
     (sum, store) => sum + store.salesSummary.cashSales + store.salesSummary.cardSales,
     0,
@@ -552,12 +572,26 @@ const App = () => {
 
           <h3>매장별 입력 영역</h3>
           <div className="row">
-            <input
-              placeholder="신규 매장명"
-              value={storeName}
-              onChange={(e) => setStoreName(e.target.value)}
-            />
-            <button onClick={createStoreInMonth}>매장 생성</button>
+            <select
+              value={storeTemplateName}
+              onChange={(e) => setStoreTemplateName(e.target.value)}
+            >
+              <option value="">전월 매장 선택</option>
+              {previousMonthStoreOptions.map((name) => (
+                <option key={name} value={name}>
+                  {name}
+                </option>
+              ))}
+              <option value="__new__">신규 입력</option>
+            </select>
+            {storeTemplateName === "__new__" && (
+              <input
+                placeholder="신규 매장명"
+                value={customStoreName}
+                onChange={(e) => setCustomStoreName(e.target.value)}
+              />
+            )}
+            <button onClick={createStoreInMonth}>신규 생성</button>
           </div>
           <div className="chip-wrap">
             {activeMonth.stores.map((store) => (
