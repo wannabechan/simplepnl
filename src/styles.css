@@ -34,6 +34,7 @@ body {
 }
 
 input,
+select,
 button {
   padding: 8px 10px;
   border: 1px solid #d1d5db;
@@ -68,6 +69,31 @@ button {
   gap: 10px;
 }
 
+.line {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.line-1 {
+  grid-template-columns: 1fr;
+}
+
+.line-2 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.line-3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+@media (max-width: 900px) {
+  .line-2,
+  .line-3 {
+    grid-template-columns: 1fr;
+  }
+}
+
 .uploader {
   border: 1px solid #e5e7eb;
   border-radius: 10px;
@@ -85,6 +111,11 @@ button {
 
 .muted {
   color: #6b7280;
+}
+
+.error {
+  color: #b91c1c;
+  font-size: 13px;
 }
 
 table {

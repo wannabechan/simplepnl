@@ -46,11 +46,34 @@ interface Store {
   months: MonthRecord[];
 }
 
-const STORAGE_KEY = "simplepnl-data-v1";
+const APP_STATE_ID = "simplepnl-main";
+const EXPENSE_CATEGORIES = [
+  "광고홍보",
+  "교통비",
+  "기타",
+  "매장유지비",
+  "보험",
+  "부자재",
+  "세금",
+  "소모품",
+  "수도광열비",
+  "식사비",
+  "식자재",
+  "외주용역비",
+  "운송비",
+  "음료",
+  "인건비",
+  "임관리비",
+  "주류",
+  "주방기물",
+  "홀기물",
+  "saas",
+];
 
 const money = new Intl.NumberFormat("ko-KR");
 
 const nowId = () => `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+const today = () => new Date().toISOString().slice(0, 10);
 
 const normalize = (value: string) => value.trim().toLowerCase().replace(/\s+/g, "");
 
@@ -99,32 +122,93 @@ const parseCardStatementRows = (rows: Record<string, unknown>[]) =>
     })
     .filter((item) => item.vendor || item.amount > 0);
 
+const readLocalState = (): Store[] => {
+  const raw = localStorage.getItem(APP_STATE_ID);
+  if (!raw) return [];
+  return JSON.parse(raw) as Store[];
+};
+
+const loadState = async (): Promise<Store[]> => {
+  try {
+    const response = await fetch("/api/state");
+    if (!response.ok) {
+      throw new Error(`API load failed: ${response.status}`);
+    }
+    const payload = (await response.json()) as { data?: Store[] };
+    return payload.data ?? [];
+  } catch {
+    return readLocalState();
+  }
+};
+
+const saveState = async (stores: Store[]) => {
+  localStorage.setItem(APP_STATE_ID, JSON.stringify(stores));
+
+  try {
+    const response = await fetch("/api/state", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ data: stores }),
+    });
+    if (!response.ok) {
+      throw new Error(`API save failed: ${response.status}`);
+    }
+  } catch {
+    // localStorage fallback is already saved above.
+  }
+};
+
 const App = () => {
   const [stores, setStores] = useState<Store[]>([]);
+  const [bootstrapped, setBootstrapped] = useState(false);
+  const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const [syncError, setSyncError] = useState("");
   const [storeName, setStoreName] = useState("");
   const [activeStoreId, setActiveStoreId] = useState<string | null>(null);
   const [monthLabel, setMonthLabel] = useState("");
   const [activeMonthId, setActiveMonthId] = useState<string | null>(null);
   const [manualExpense, setManualExpense] = useState({
-    date: "",
+    date: today(),
     vendor: "",
-    category: "",
+    category: "기타",
     amount: "",
     note: "",
   });
 
   useEffect(() => {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return;
-    const parsed = JSON.parse(raw) as Store[];
-    setStores(parsed);
-    setActiveStoreId(parsed[0]?.id ?? null);
-    setActiveMonthId(parsed[0]?.months[0]?.id ?? null);
+    const run = async () => {
+      try {
+        const parsed = await loadState();
+        setStores(parsed);
+        setActiveStoreId(parsed[0]?.id ?? null);
+        setActiveMonthId(parsed[0]?.months[0]?.id ?? null);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Unknown load error";
+        setSyncError(message);
+      } finally {
+        setBootstrapped(true);
+      }
+    };
+    void run();
   }, []);
 
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(stores));
-  }, [stores]);
+    if (!bootstrapped) return;
+    const timer = window.setTimeout(() => {
+      setSaveStatus("saving");
+      saveState(stores)
+        .then(() => {
+          setSaveStatus("saved");
+          setSyncError("");
+        })
+        .catch((error) => {
+          const message = error instanceof Error ? error.message : "Unknown save error";
+          setSaveStatus("error");
+          setSyncError(message);
+        });
+    }, 350);
+    return () => window.clearTimeout(timer);
+  }, [stores, bootstrapped]);
 
   const activeStore = useMemo(
     () => stores.find((store) => store.id === activeStoreId) ?? null,
@@ -200,7 +284,7 @@ const App = () => {
         },
       ],
     }));
-    setManualExpense({ date: "", vendor: "", category: "", amount: "", note: "" });
+    setManualExpense({ date: today(), vendor: "", category: "기타", amount: "", note: "" });
   };
 
   const applyEvidenceRows = (
@@ -269,12 +353,6 @@ const App = () => {
     upsertMonth((month) => ({ ...month, categorySales }));
   };
 
-  const onUploadCardPayments = async (file: File) => {
-    const rows = await parseFileRows(file);
-    const data = parsePurchaseRows(rows);
-    upsertMonth((month) => applyEvidenceRows(month, data, "cardSlip", "cardPayments"));
-  };
-
   const onUploadPurchaseDocs = async (file: File, type: EvidenceType, docType: UploadedDocType) => {
     const rows = await parseFileRows(file);
     const data = parsePurchaseRows(rows);
@@ -300,6 +378,17 @@ const App = () => {
       <section className="panel">
         <h1>매장 월별 손익 리포트 (공급가액 기준)</h1>
         <p className="muted">매장과 월을 생성하고 업로드/입력하면 매출, 비용, 손익이 자동 집계됩니다.</p>
+        <p className="muted">
+          저장 방식: API 영구 저장 + localStorage 캐시 / 상태:{" "}
+          {saveStatus === "saving"
+            ? "저장 중"
+            : saveStatus === "saved"
+              ? "저장 완료"
+              : saveStatus === "error"
+                ? "저장 실패"
+                : "대기"}
+        </p>
+        {syncError && <p className="error">{syncError}</p>}
 
         <div className="row">
           <input
@@ -356,19 +445,21 @@ const App = () => {
         <section className="panel">
           <h2>{activeMonth.label} 데이터 입력</h2>
 
-          <div className="grid">
+          <div className="line line-2">
             <label className="uploader">
-              1) 매출표 업로드 (현금/카드 요약)
+              매출표 업로드 (현금/카드 요약)
               <input type="file" accept=".xlsx,.xls,.csv" onChange={(e) => e.target.files?.[0] && onUploadSalesSummary(e.target.files[0])} />
             </label>
 
             <label className="uploader">
-              2) 매출상품분석표 업로드 (카테고리 매출)
+              매출상품분석표 업로드 (카테고리 매출)
               <input type="file" accept=".xlsx,.xls,.csv" onChange={(e) => e.target.files?.[0] && onUploadCategorySales(e.target.files[0])} />
             </label>
+          </div>
 
+          <div className="line line-2">
             <div className="uploader">
-              3) 재고 입력
+              재고 입력
               <input
                 placeholder="메뉴 재고"
                 value={activeMonth.inventory.menu}
@@ -385,9 +476,34 @@ const App = () => {
               />
             </div>
 
+            <label className="uploader">
+              당월 카드내역서 업로드 (복수 가능)
+              <input type="file" multiple accept=".xlsx,.xls,.csv" onChange={(e) => onUploadCardStatements(e.target.files)} />
+            </label>
+          </div>
+
+          <div className="line line-3">
+            <label className="uploader">
+              매입세금계산서 업로드
+              <input type="file" accept=".xlsx,.xls,.csv" onChange={(e) => e.target.files?.[0] && onUploadPurchaseDocs(e.target.files[0], "taxInvoice", "purchaseTaxInvoice")} />
+            </label>
+
+            <label className="uploader">
+              매입계산서 업로드
+              <input type="file" accept=".xlsx,.xls,.csv" onChange={(e) => e.target.files?.[0] && onUploadPurchaseDocs(e.target.files[0], "invoice", "purchaseInvoice")} />
+            </label>
+
+            <label className="uploader">
+              매입증빙내역 업로드
+              <input type="file" accept=".xlsx,.xls,.csv" onChange={(e) => e.target.files?.[0] && onUploadPurchaseDocs(e.target.files[0], "otherEvidence", "purchaseEvidence")} />
+            </label>
+          </div>
+
+          <div className="line line-1">
             <div className="uploader">
-              4) 현금 결제 비용 수동 입력
+              현금 결제 비용 수동 입력
               <input
+                type="date"
                 placeholder="일자"
                 value={manualExpense.date}
                 onChange={(e) => setManualExpense((prev) => ({ ...prev, date: e.target.value }))}
@@ -397,11 +513,16 @@ const App = () => {
                 value={manualExpense.vendor}
                 onChange={(e) => setManualExpense((prev) => ({ ...prev, vendor: e.target.value }))}
               />
-              <input
-                placeholder="비용분류"
+              <select
                 value={manualExpense.category}
                 onChange={(e) => setManualExpense((prev) => ({ ...prev, category: e.target.value }))}
-              />
+              >
+                {EXPENSE_CATEGORIES.map((category) => (
+                  <option key={category} value={category}>
+                    {category}
+                  </option>
+                ))}
+              </select>
               <input
                 placeholder="공급가액"
                 value={manualExpense.amount}
@@ -414,31 +535,6 @@ const App = () => {
               />
               <button onClick={addManualExpense}>비용 추가</button>
             </div>
-
-            <label className="uploader">
-              5) 카드 결제 내역 업로드
-              <input type="file" accept=".xlsx,.xls,.csv" onChange={(e) => e.target.files?.[0] && onUploadCardPayments(e.target.files[0])} />
-            </label>
-
-            <label className="uploader">
-              6) 매입세금계산서 업로드
-              <input type="file" accept=".xlsx,.xls,.csv" onChange={(e) => e.target.files?.[0] && onUploadPurchaseDocs(e.target.files[0], "taxInvoice", "purchaseTaxInvoice")} />
-            </label>
-
-            <label className="uploader">
-              7) 매입계산서 업로드
-              <input type="file" accept=".xlsx,.xls,.csv" onChange={(e) => e.target.files?.[0] && onUploadPurchaseDocs(e.target.files[0], "invoice", "purchaseInvoice")} />
-            </label>
-
-            <label className="uploader">
-              8) 매입증빙내역 업로드
-              <input type="file" accept=".xlsx,.xls,.csv" onChange={(e) => e.target.files?.[0] && onUploadPurchaseDocs(e.target.files[0], "otherEvidence", "purchaseEvidence")} />
-            </label>
-
-            <label className="uploader">
-              9) 당월 카드내역서 업로드 (복수 가능)
-              <input type="file" multiple accept=".xlsx,.xls,.csv" onChange={(e) => onUploadCardStatements(e.target.files)} />
-            </label>
           </div>
 
           <h3>매출 항목 정리</h3>
