@@ -298,6 +298,42 @@ const App = () => {
     setStoreTemplateName("");
   };
 
+  const deleteMonth = (monthId: string) => {
+    const month = months.find((item) => item.id === monthId);
+    if (!month) return;
+    if (month.stores.length > 0) {
+      window.alert("포함된 매장이 남아있어 월을 삭제할 수 없습니다.");
+      return;
+    }
+    if (!window.confirm("월데이터를 삭제하시겠습니까?")) return;
+
+    const next = months.filter((item) => item.id !== monthId);
+    setMonths(next);
+    if (activeMonthId === monthId) {
+      setActiveMonthId(next[0]?.id ?? null);
+      setActiveStoreId(next[0]?.stores[0]?.id ?? null);
+    }
+  };
+
+  const deleteStore = (storeId: string) => {
+    if (!activeMonth) return;
+    if (!window.confirm("매장을 삭제하시겠습니까?")) return;
+
+    updateMonth((month) => {
+      const stores = month.stores.filter((store) => store.id !== storeId);
+      if (activeStoreId === storeId) {
+        setActiveStoreId(stores[0]?.id ?? null);
+      }
+      return {
+        ...month,
+        stores,
+        cardStatements: month.cardStatements.map((row) =>
+          row.assignedStoreId === storeId ? { ...row, assignedStoreId: "" } : row,
+        ),
+      };
+    });
+  };
+
   const rebuildCardExpenses = (month: MonthRecord): MonthRecord => {
     const stores = month.stores.map((store) => ({
       ...store,
@@ -472,16 +508,26 @@ const App = () => {
 
         <div className="chip-wrap">
           {months.map((month) => (
-            <button
-              key={month.id}
-              className={month.id === activeMonthId ? "chip active" : "chip"}
-              onClick={() => {
-                setActiveMonthId(month.id);
-                setActiveStoreId(month.stores[0]?.id ?? null);
-              }}
-            >
-              {month.label}
-            </button>
+            <div key={month.id} className="chip-item">
+              <button
+                className={month.id === activeMonthId ? "chip active" : "chip"}
+                onClick={() => {
+                  setActiveMonthId(month.id);
+                  setActiveStoreId(month.stores[0]?.id ?? null);
+                }}
+              >
+                {month.label}
+              </button>
+              <button
+                className="chip-delete"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  deleteMonth(month.id);
+                }}
+              >
+                x
+              </button>
+            </div>
           ))}
         </div>
       </section>
@@ -595,13 +641,23 @@ const App = () => {
           </div>
           <div className="chip-wrap">
             {activeMonth.stores.map((store) => (
-              <button
-                key={store.id}
-                className={store.id === activeStoreId ? "chip active" : "chip"}
-                onClick={() => setActiveStoreId(store.id)}
-              >
-                {store.name}
-              </button>
+              <div key={store.id} className="chip-item">
+                <button
+                  className={store.id === activeStoreId ? "chip active" : "chip"}
+                  onClick={() => setActiveStoreId(store.id)}
+                >
+                  {store.name}
+                </button>
+                <button
+                  className="chip-delete"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    deleteStore(store.id);
+                  }}
+                >
+                  x
+                </button>
+              </div>
             ))}
           </div>
 

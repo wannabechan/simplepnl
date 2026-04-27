@@ -53,14 +53,35 @@ button {
   gap: 8px;
 }
 
+.chip-item {
+  position: relative;
+  display: inline-block;
+}
+
 .chip {
   background: #f3f4f6;
   color: #111827;
+  padding-right: 20px;
 }
 
 .chip.active {
   background: #dbeafe;
   border-color: #60a5fa;
+}
+
+.chip-delete {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  border: 1px solid #cbd5e1;
+  background: #ffffff;
+  color: #334155;
+  font-size: 11px;
+  line-height: 1;
+  padding: 0;
 }
 
 .grid {
