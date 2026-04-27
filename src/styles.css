@@ -146,6 +146,23 @@ button {
   width: 100%;
 }
 
+.save-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 14px 0 8px;
+}
+
+.btn-save {
+  background: #166534;
+  border-color: #14532d;
+}
+
+.btn-save:hover {
+  filter: brightness(1.05);
+}
+
 table {
   width: 100%;
   border-collapse: collapse;

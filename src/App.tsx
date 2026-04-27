@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import * as XLSX from "xlsx";
 
 type EvidenceType = "taxInvoice" | "invoice" | "otherEvidence" | "cardSlip";
@@ -20,6 +20,16 @@ interface Expense {
   evidence: Record<EvidenceType, boolean>;
 }
 
+type ManualRevenueChannel = "cash" | "card" | "other";
+
+interface ManualRevenueEntry {
+  id: string;
+  date: string;
+  channel: ManualRevenueChannel;
+  amount: number;
+  note: string;
+}
+
 interface StoreRecord {
   id: string;
   name: string;
@@ -28,6 +38,7 @@ interface StoreRecord {
     cardSales: number;
   };
   categorySales: CategorySales[];
+  manualRevenueEntries: ManualRevenueEntry[];
   inventory: {
     menu: string;
     beverage: string;
@@ -143,6 +154,11 @@ const readLocalState = (): MonthRecord[] => {
   return JSON.parse(raw) as MonthRecord[];
 };
 
+const normalizeStore = (store: StoreRecord): StoreRecord => ({
+  ...store,
+  manualRevenueEntries: Array.isArray(store.manualRevenueEntries) ? store.manualRevenueEntries : [],
+});
+
 const sanitizeMonths = (value: unknown): MonthRecord[] => {
   if (!Array.isArray(value)) return [];
   const valid = value.filter(
@@ -151,8 +167,11 @@ const sanitizeMonths = (value: unknown): MonthRecord[] => {
       typeof item === "object" &&
       Array.isArray((item as { stores?: unknown }).stores) &&
       Array.isArray((item as { cardStatements?: unknown }).cardStatements),
-  );
-  return valid as MonthRecord[];
+  ) as MonthRecord[];
+  return valid.map((month) => ({
+    ...month,
+    stores: month.stores.map((store) => normalizeStore(store)),
+  }));
 };
 
 const loadState = async (): Promise<MonthRecord[]> => {
@@ -184,13 +203,15 @@ const emptyStore = (name: string): StoreRecord => ({
   name,
   salesSummary: { cashSales: 0, cardSales: 0 },
   categorySales: [],
+  manualRevenueEntries: [],
   inventory: { menu: "", beverage: "" },
   expenses: [],
 });
 
 const App = () => {
   const [months, setMonths] = useState<MonthRecord[]>([]);
-  const [bootstrapped, setBootstrapped] = useState(false);
+  const monthsRef = useRef(months);
+  monthsRef.current = months;
   const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [syncError, setSyncError] = useState("");
   const [monthLabel, setMonthLabel] = useState("");
@@ -205,6 +226,12 @@ const App = () => {
     amount: "",
     note: "",
   });
+  const [manualRevenue, setManualRevenue] = useState({
+    date: today(),
+    channel: "cash" as ManualRevenueChannel,
+    amount: "",
+    note: "",
+  });
 
   useEffect(() => {
     const run = async () => {
@@ -216,30 +243,23 @@ const App = () => {
       } catch (error) {
         const message = error instanceof Error ? error.message : "Unknown load error";
         setSyncError(message);
-      } finally {
-        setBootstrapped(true);
       }
     };
     void run();
   }, []);
 
-  useEffect(() => {
-    if (!bootstrapped) return;
-    const timer = window.setTimeout(() => {
-      setSaveStatus("saving");
-      saveState(months)
-        .then(() => {
-          setSaveStatus("saved");
-          setSyncError("");
-        })
-        .catch((error) => {
-          const message = error instanceof Error ? error.message : "Unknown save error";
-          setSaveStatus("error");
-          setSyncError(message);
-        });
-    }, 300);
-    return () => window.clearTimeout(timer);
-  }, [months, bootstrapped]);
+  const saveNow = async () => {
+    setSaveStatus("saving");
+    try {
+      await saveState(monthsRef.current);
+      setSaveStatus("saved");
+      setSyncError("");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown save error";
+      setSaveStatus("error");
+      setSyncError(message);
+    }
+  };
 
   const activeMonth = useMemo(
     () => months.find((month) => month.id === activeMonthId) ?? null,
@@ -474,6 +494,38 @@ const App = () => {
     setManualExpense({ date: today(), vendor: "", category: "기타", amount: "", note: "" });
   };
 
+  const addManualRevenue = () => {
+    if (!manualRevenue.amount.trim()) return;
+    const amount = toNumber(manualRevenue.amount);
+    if (amount <= 0) return;
+    updateStore((store) => ({
+      ...store,
+      manualRevenueEntries: [
+        ...store.manualRevenueEntries,
+        {
+          id: nowId(),
+          date: manualRevenue.date,
+          channel: manualRevenue.channel,
+          amount,
+          note: manualRevenue.note.trim(),
+        },
+      ],
+    }));
+    setManualRevenue({ date: today(), channel: "cash", amount: "", note: "" });
+  };
+
+  const storeTotalRevenue = (store: StoreRecord) => {
+    let cash = store.salesSummary.cashSales;
+    let card = store.salesSummary.cardSales;
+    let other = 0;
+    store.manualRevenueEntries.forEach((entry) => {
+      if (entry.channel === "cash") cash += entry.amount;
+      else if (entry.channel === "card") card += entry.amount;
+      else other += entry.amount;
+    });
+    return cash + card + other;
+  };
+
   const allMonthExpenses = activeMonth?.stores.flatMap((store) => store.expenses) ?? [];
   const previousMonthStoreOptions = useMemo(() => {
     if (!activeMonth) return [];
@@ -483,10 +535,7 @@ const App = () => {
     return [...new Set(previousMonth.stores.map((store) => store.name))]
       .sort((a, b) => a.localeCompare(b, "en"));
   }, [months, activeMonth]);
-  const totalSales = activeMonth?.stores.reduce(
-    (sum, store) => sum + store.salesSummary.cashSales + store.salesSummary.cardSales,
-    0,
-  ) ?? 0;
+  const totalSales = activeMonth?.stores.reduce((sum, store) => sum + storeTotalRevenue(store), 0) ?? 0;
   const totalExpense = allMonthExpenses.reduce((sum, item) => sum + item.amount, 0);
   const operatingProfit = totalSales - totalExpense;
 
@@ -496,7 +545,7 @@ const App = () => {
         <h1>월별 손익 리포트 (공급가액 기준)</h1>
         <p className="muted">구조: 월 생성 · 월 하위 매장 생성 · 월 공통 입력/매장별 입력</p>
         <p className="muted">
-          저장 방식: API 영구 저장 + localStorage 캐시 / 상태:{" "}
+          저장: 각 입력 영역 하단의 저장 버튼으로 반영 · API + localStorage / 상태:{" "}
           {saveStatus === "saving" ? "저장 중" : saveStatus === "saved" ? "저장 완료" : saveStatus === "error" ? "저장 실패" : "대기"}
         </p>
         {syncError && <p className="error">{syncError}</p>}
@@ -614,6 +663,13 @@ const App = () => {
             </>
           )}
 
+          <div className="save-row">
+            <button type="button" className="btn-save" onClick={() => void saveNow()}>
+              저장
+            </button>
+            <span className="muted">생성월 전체 영향 입력 내용을 서버에 저장합니다.</span>
+          </div>
+
           <hr className="report-divider" />
 
           <h3>매장별 입력 영역</h3>
@@ -677,17 +733,23 @@ const App = () => {
 
               <div className="line line-2">
                 <div className="uploader">
-                  재고 입력
-                  <input
-                    placeholder="메뉴 재고"
-                    value={activeStore.inventory.menu}
-                    onChange={(e) => updateStore((store) => ({ ...store, inventory: { ...store.inventory, menu: e.target.value } }))}
-                  />
-                  <input
-                    placeholder="음료 재고"
-                    value={activeStore.inventory.beverage}
-                    onChange={(e) => updateStore((store) => ({ ...store, inventory: { ...store.inventory, beverage: e.target.value } }))}
-                  />
+                  기타 매출 수동 입력
+                  <input type="date" value={manualRevenue.date} onChange={(e) => setManualRevenue((prev) => ({ ...prev, date: e.target.value }))} />
+                  <select
+                    value={manualRevenue.channel}
+                    onChange={(e) =>
+                      setManualRevenue((prev) => ({ ...prev, channel: e.target.value as ManualRevenueChannel }))
+                    }
+                  >
+                    <option value="cash">현금매출</option>
+                    <option value="card">카드매출</option>
+                    <option value="other">기타매출</option>
+                  </select>
+                  <input placeholder="공급가액" value={manualRevenue.amount} onChange={(e) => setManualRevenue((prev) => ({ ...prev, amount: e.target.value }))} />
+                  <input placeholder="비고" value={manualRevenue.note} onChange={(e) => setManualRevenue((prev) => ({ ...prev, note: e.target.value }))} />
+                  <button type="button" onClick={addManualRevenue}>
+                    매출 반영
+                  </button>
                 </div>
                 <div className="uploader">
                   현금 결제 비용 수동 입력
@@ -702,11 +764,36 @@ const App = () => {
                   </select>
                   <input placeholder="공급가액" value={manualExpense.amount} onChange={(e) => setManualExpense((prev) => ({ ...prev, amount: e.target.value }))} />
                   <input placeholder="비고" value={manualExpense.note} onChange={(e) => setManualExpense((prev) => ({ ...prev, note: e.target.value }))} />
-                  <button onClick={addManualExpense}>비용 추가</button>
+                  <button type="button" onClick={addManualExpense}>
+                    비용 추가
+                  </button>
+                </div>
+              </div>
+
+              <div className="line line-1">
+                <div className="uploader">
+                  재고 입력
+                  <input
+                    placeholder="메뉴 재고"
+                    value={activeStore.inventory.menu}
+                    onChange={(e) => updateStore((store) => ({ ...store, inventory: { ...store.inventory, menu: e.target.value } }))}
+                  />
+                  <input
+                    placeholder="음료 재고"
+                    value={activeStore.inventory.beverage}
+                    onChange={(e) => updateStore((store) => ({ ...store, inventory: { ...store.inventory, beverage: e.target.value } }))}
+                  />
                 </div>
               </div>
             </>
           )}
+
+          <div className="save-row">
+            <button type="button" className="btn-save" onClick={() => void saveNow()}>
+              저장
+            </button>
+            <span className="muted">매장별 입력 내용을 서버에 저장합니다.</span>
+          </div>
 
           <hr className="report-divider" />
           <h3>월 전체 손익 정리</h3>
