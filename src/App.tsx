@@ -534,6 +534,7 @@ const App = () => {
             </div>
           </div>
 
+          <hr className="report-divider" />
           <h3>매출 항목 정리</h3>
           <div className="summary-grid">
             <div>현금 매출 합: {money.format(activeMonth.salesSummary.cashSales)}원</div>

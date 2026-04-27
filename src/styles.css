@@ -118,6 +118,13 @@ button {
   font-size: 13px;
 }
 
+.report-divider {
+  border: 0;
+  border-top: 1px solid #d1d5db;
+  margin: 20px 0 16px;
+  width: 100%;
+}
+
 table {
   width: 100%;
   border-collapse: collapse;
