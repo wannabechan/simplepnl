@@ -144,17 +144,14 @@ const loadState = async (): Promise<Store[]> => {
 const saveState = async (stores: Store[]) => {
   localStorage.setItem(APP_STATE_ID, JSON.stringify(stores));
 
-  try {
-    const response = await fetch("/api/state", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ data: stores }),
-    });
-    if (!response.ok) {
-      throw new Error(`API save failed: ${response.status}`);
-    }
-  } catch {
-    // localStorage fallback is already saved above.
+  const response = await fetch("/api/state", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ data: stores }),
+  });
+  if (!response.ok) {
+    const details = await response.text();
+    throw new Error(`API save failed: ${response.status} ${details}`);
   }
 };
 

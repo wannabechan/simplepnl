@@ -31,7 +31,14 @@ export default async function handler(req: any, res: any) {
   }
 
   if (req.method === "PUT") {
-    const body = req.body as { data?: StoresPayload };
+    let rawBody: unknown;
+    try {
+      rawBody = typeof req.body === "string" ? JSON.parse(req.body) : req.body;
+    } catch {
+      res.status(400).json({ error: "Invalid JSON body" });
+      return;
+    }
+    const body = rawBody as { data?: StoresPayload };
     const payload = Array.isArray(body?.data) ? body.data : [];
     await sql`
       insert into app_state (id, data, updated_at)
