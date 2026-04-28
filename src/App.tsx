@@ -10,6 +10,8 @@ interface SalesSummaryRow {
   vat: number;
   discount: number;
   paymentMethod: string;
+  entryType?: "upload" | "manual";
+  manualOrder?: number;
 }
 
 interface ProductSummaryRow {
@@ -21,7 +23,7 @@ interface ProductSummaryRow {
   discount: number;
 }
 
-/** 비용 등록: 첫 행 헤더, 2행부터 데이터 (9컬럼) */
+/** 비용 등록: 헤더(결제일·비용계정·…) 다음 행부터 데이터 (9컬럼) */
 interface CostEntryRow {
   id: string;
   paymentDate: string;
@@ -33,6 +35,8 @@ interface CostEntryRow {
   taxMode: string;
   payStatus: string;
   memo: string;
+  entryType?: "upload" | "manual";
+  manualOrder?: number;
 }
 
 interface StoreRecord {
@@ -41,6 +45,8 @@ interface StoreRecord {
   salesSummaryRows?: SalesSummaryRow[];
   productSummaryRows?: ProductSummaryRow[];
   costEntryRows?: CostEntryRow[];
+  menuInventory?: number;
+  beverageInventory?: number;
 }
 
 interface MonthRecord {
@@ -50,7 +56,13 @@ interface MonthRecord {
 }
 
 const nowId = () => `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-const normalize = (value: string) => value.trim().toLowerCase().replace(/\s+/g, "");
+const normalize = (value: string) =>
+  value
+    .trim()
+    .replace(/\uFEFF/g, "")
+    .toLowerCase()
+    .replace(/\s+/g, "")
+    .replace(/[()[\]{}\-_/\\:.,]/g, "");
 
 const toNumber = (value: unknown): number => {
   if (typeof value === "number") return Number.isFinite(value) ? value : 0;
@@ -106,6 +118,16 @@ const findProductHeaderRowIndex = (matrix: unknown[][]): number => {
   return 0;
 };
 
+/** 비용 등록: 결제일 + 비용계정(또는 구 헤더) 행을 헤더로 인식 */
+const findCostHeaderRowIndex = (matrix: unknown[][]): number => {
+  for (let i = 0; i < Math.min(20, matrix.length); i++) {
+    const row = matrix[i] ?? [];
+    const cells = row.map((c) => normalize(String(c)));
+    if (cells.includes("결제일") && (cells.includes("비용계정") || cells.includes("비용종류"))) return i;
+  }
+  return 0;
+};
+
 const matrixRowsToObjects = (
   matrix: unknown[][],
   headerRowIdx: number,
@@ -132,11 +154,17 @@ const matrixRowsToObjects = (
 
 const formatBusinessDay = (value: unknown): string => {
   if (value === null || value === undefined || value === "") return "";
-  if (typeof value === "number" && Number.isFinite(value)) {
+  const numericValue =
+    typeof value === "number"
+      ? value
+      : typeof value === "string" && value.trim() !== "" && Number.isFinite(Number(value))
+        ? Number(value)
+        : null;
+  if (numericValue !== null && Number.isFinite(numericValue)) {
     const epoch = Date.UTC(1899, 11, 30);
-    const ms = epoch + value * 86400000;
+    const ms = epoch + numericValue * 86400000;
     const d = new Date(ms);
-    if (!Number.isNaN(d.getTime()) && value > 20000 && value < 120000) {
+    if (!Number.isNaN(d.getTime()) && numericValue > 20000 && numericValue < 120000) {
       const y = d.getUTCFullYear();
       const m = String(d.getUTCMonth() + 1).padStart(2, "0");
       const day = String(d.getUTCDate()).padStart(2, "0");
@@ -152,7 +180,7 @@ const parseSalesFile = async (file: File): Promise<SalesSummaryRow[]> => {
   const firstSheet = workbook.SheetNames[0];
   if (!firstSheet) return [];
   const sheet = workbook.Sheets[firstSheet];
-  const matrix = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, defval: "", raw: false });
+  const matrix = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, defval: "", raw: true });
   if (!matrix.length) return [];
   const headerRowIdx = findSalesHeaderRowIndex(matrix);
   const rows = matrixRowsToObjects(matrix, headerRowIdx);
@@ -176,6 +204,8 @@ const parseSalesFile = async (file: File): Promise<SalesSummaryRow[]> => {
         vat,
         discount,
         paymentMethod,
+        entryType: "upload" as const,
+        manualOrder: 0,
       };
     })
     .filter((r) => {
@@ -231,23 +261,30 @@ const parseProductFile = async (file: File): Promise<ProductSummaryRow[]> => {
     });
 };
 
-/** 비용 파일: 1행이 헤더, 2행부터 본문 */
+/** 비용 파일: 헤더 행(기본 1행) 다음부터 본문 */
 const parseCostFile = async (file: File): Promise<CostEntryRow[]> => {
   const buffer = await file.arrayBuffer();
   const workbook = XLSX.read(buffer, { type: "array" });
   const firstSheet = workbook.SheetNames[0];
   if (!firstSheet) return [];
   const sheet = workbook.Sheets[firstSheet];
-  const matrix = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, defval: "", raw: false });
+  const matrix = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, defval: "", raw: true });
   if (!matrix.length) return [];
-  const headerRowIdx = 0;
+  const headerRowIdx = findCostHeaderRowIndex(matrix);
   const rows = matrixRowsToObjects(matrix, headerRowIdx);
 
   return rows
     .map((row) => {
       const paymentDate = formatBusinessDay(findCell(row, ["결제일", "일자", "날짜"]));
       const expenseKind = String(
-        findCell(row, ["비용 종류", "비용종류", "비용 종류 콤보박스", "비용종류콤보박스"]) ?? "",
+        findCell(row, [
+          "비용계정",
+          "비용 계정",
+          "비용종류",
+          "비용 종류",
+          "비용 종류 콤보박스",
+          "비용종류콤보박스",
+        ]) ?? "",
       ).trim();
       const vendorName = String(findCell(row, ["업체명", "업체 명", "거래처"]) ?? "").trim();
       const totalAmount = toNumber(findCell(row, ["합계금액", "합계 금액"]));
@@ -255,6 +292,8 @@ const parseCostFile = async (file: File): Promise<CostEntryRow[]> => {
       const vat = toNumber(findCell(row, ["부가세"]));
       const taxMode = String(
         findCell(row, [
+          "과세여부",
+          "과세 여부",
           "과세/면세",
           "과세면세",
           "과세 부과세",
@@ -264,7 +303,14 @@ const parseCostFile = async (file: File): Promise<CostEntryRow[]> => {
         ]) ?? "",
       ).trim();
       const payStatus = String(
-        findCell(row, ["결제/미결제", "결제미결제", "결제 여부", "지급여부", "결제/미결제 콤보박스"]) ?? "",
+        findCell(row, [
+          "결제여부",
+          "결제 여부",
+          "결제/미결제",
+          "결제미결제",
+          "지급여부",
+          "결제/미결제 콤보박스",
+        ]) ?? "",
       ).trim();
       const memo = String(findCell(row, ["메모", "비고"]) ?? "").trim();
 
@@ -279,6 +325,8 @@ const parseCostFile = async (file: File): Promise<CostEntryRow[]> => {
         taxMode,
         payStatus,
         memo,
+        entryType: "upload" as const,
+        manualOrder: 0,
       };
     })
     .filter((r) => {
@@ -305,6 +353,8 @@ const normalizeSalesRow = (raw: Partial<SalesSummaryRow>): SalesSummaryRow => ({
   vat: toNumber(raw.vat),
   discount: toNumber(raw.discount),
   paymentMethod: typeof raw.paymentMethod === "string" ? raw.paymentMethod : String(raw.paymentMethod ?? ""),
+  entryType: raw.entryType === "manual" ? "manual" : "upload",
+  manualOrder: typeof raw.manualOrder === "number" && Number.isFinite(raw.manualOrder) ? raw.manualOrder : 0,
 });
 
 const normalizeProductRow = (raw: Partial<ProductSummaryRow>): ProductSummaryRow => ({
@@ -329,6 +379,8 @@ const normalizeCostEntryRow = (raw: Partial<CostEntryRow>): CostEntryRow => ({
   taxMode: typeof raw.taxMode === "string" ? raw.taxMode : String(raw.taxMode ?? ""),
   payStatus: typeof raw.payStatus === "string" ? raw.payStatus : String(raw.payStatus ?? ""),
   memo: typeof raw.memo === "string" ? raw.memo : String(raw.memo ?? ""),
+  entryType: raw.entryType === "manual" ? "manual" : "upload",
+  manualOrder: typeof raw.manualOrder === "number" && Number.isFinite(raw.manualOrder) ? raw.manualOrder : 0,
 });
 
 const normalizeStore = (raw: unknown): StoreRecord => {
@@ -351,6 +403,8 @@ const normalizeStore = (raw: unknown): StoreRecord => {
     salesSummaryRows,
     productSummaryRows,
     costEntryRows,
+    menuInventory: toNumber(s.menuInventory),
+    beverageInventory: toNumber(s.beverageInventory),
   };
 };
 
@@ -398,11 +452,15 @@ const mergeStructureWithSalesFromServer = (
   const salesByStoreId = new Map<string, SalesSummaryRow[] | undefined>();
   const productsByStoreId = new Map<string, ProductSummaryRow[] | undefined>();
   const costsByStoreId = new Map<string, CostEntryRow[] | undefined>();
+  const menuInventoryByStoreId = new Map<string, number | undefined>();
+  const beverageInventoryByStoreId = new Map<string, number | undefined>();
   for (const m of serverMonths) {
     for (const s of m.stores) {
       salesByStoreId.set(s.id, s.salesSummaryRows);
       productsByStoreId.set(s.id, s.productSummaryRows);
       costsByStoreId.set(s.id, s.costEntryRows);
+      menuInventoryByStoreId.set(s.id, s.menuInventory);
+      beverageInventoryByStoreId.set(s.id, s.beverageInventory);
     }
   }
   return localMonths.map((m) => ({
@@ -414,6 +472,8 @@ const mergeStructureWithSalesFromServer = (
       salesSummaryRows: salesByStoreId.get(s.id),
       productSummaryRows: productsByStoreId.get(s.id),
       costEntryRows: costsByStoreId.get(s.id),
+      menuInventory: menuInventoryByStoreId.get(s.id),
+      beverageInventory: beverageInventoryByStoreId.get(s.id),
     })),
   }));
 };
@@ -424,28 +484,124 @@ const emptyStore = (name: string): StoreRecord => ({
 });
 
 const money = new Intl.NumberFormat("ko-KR");
-
-/** 테이블 표시용: 파일 값이 목록에 없으면 해당 행 옵션에 포함 */
-const COST_EXPENSE_KIND_PRESETS = [
-  "임대료",
-  "전기·수도",
-  "통신비",
-  "소모품",
-  "광고",
-  "급여",
-  "세금·공과금",
-  "수수료",
-  "기타",
-] as const;
-const COST_TAX_MODE_PRESETS = ["과세", "면세", "불공제", "영세", "기타"] as const;
-const COST_PAY_STATUS_PRESETS = ["결제", "미결제"] as const;
-
-const withValueOption = (presets: readonly string[], value: string): string[] => {
-  const v = value.trim();
-  const list = [...presets];
-  if (v && !list.includes(v)) list.push(v);
-  return v ? list : ["", ...list];
+const sortSalesRows = (rows: SalesSummaryRow[]): SalesSummaryRow[] => {
+  const manual = rows
+    .filter((r) => r.entryType === "manual")
+    .sort((a, b) => (a.manualOrder ?? 0) - (b.manualOrder ?? 0));
+  const uploaded = rows.filter((r) => r.entryType !== "manual");
+  return [...manual, ...uploaded];
 };
+const sortCostRows = (rows: CostEntryRow[]): CostEntryRow[] => {
+  const manual = rows
+    .filter((r) => r.entryType === "manual")
+    .sort((a, b) => (a.manualOrder ?? 0) - (b.manualOrder ?? 0));
+  const uploaded = rows.filter((r) => r.entryType !== "manual");
+  return [...manual, ...uploaded];
+};
+const todayYmd = () => {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, "0");
+  const d = String(now.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+};
+const COST_ACCOUNT_OPTIONS = [
+  "광고홍보",
+  "교통비",
+  "매장유지비",
+  "보험",
+  "부자재",
+  "세금",
+  "소모품",
+  "수도광열비",
+  "식사비",
+  "식자재",
+  "외주용역비",
+  "운송비",
+  "음료",
+  "인건비",
+  "임관리비",
+  "주류",
+  "주방기물",
+  "홀기물",
+  "saas",
+  "_기타",
+] as const;
+const calcSupplyAndVat = (totalAmountRaw: string, taxModeRaw: string) => {
+  const total = toNumber(totalAmountRaw);
+  const roundedTotal = Math.round(total);
+  if (taxModeRaw.trim() === "과세") {
+    const supplyAmount = Math.round(total / 1.1);
+    return { supplyAmount, vat: roundedTotal - supplyAmount };
+  }
+  return { supplyAmount: roundedTotal, vat: 0 };
+};
+
+interface SalesEntryDraft {
+  businessDay: string;
+  total: string;
+  paymentAmount: string;
+  supplyAmount: string;
+  vat: string;
+  discount: string;
+  paymentMethod: "카드" | "현금" | "기타";
+}
+
+interface InventoryDraft {
+  menuInventory: string;
+  beverageInventory: string;
+}
+
+const calcSalesDerived = (paymentAmountRaw: string, discountRaw: string) => {
+  const paymentAmount = toNumber(paymentAmountRaw);
+  const discount = toNumber(discountRaw);
+  const supplyAmount = Math.round(paymentAmount / 1.1);
+  const vat = paymentAmount - supplyAmount;
+  const total = paymentAmount + discount;
+  return { paymentAmount, discount, supplyAmount, vat, total };
+};
+
+const emptySalesEntryDraft = (): SalesEntryDraft => {
+  const base = calcSalesDerived("", "");
+  return {
+    businessDay: todayYmd(),
+    total: String(base.total),
+    paymentAmount: "",
+    supplyAmount: String(base.supplyAmount),
+    vat: String(base.vat),
+    discount: "",
+    paymentMethod: "카드",
+  };
+};
+
+const emptyInventoryDraft = (): InventoryDraft => ({
+  menuInventory: "",
+  beverageInventory: "",
+});
+
+interface CostEntryDraft {
+  paymentDate: string;
+  expenseKind: string;
+  vendorName: string;
+  totalAmount: string;
+  supplyAmount: string;
+  vat: string;
+  taxMode: string;
+  payStatus: string;
+  memo: string;
+}
+
+const emptyCostEntryDraft = (): CostEntryDraft => ({
+  paymentDate: todayYmd(),
+  expenseKind: "",
+  vendorName: "",
+  totalAmount: "",
+  supplyAmount: "0",
+  vat: "0",
+  taxMode: "과세",
+  payStatus: "결제",
+  memo: "",
+});
 
 const App = () => {
   const [months, setMonths] = useState<MonthRecord[]>([]);
@@ -463,6 +619,13 @@ const App = () => {
   const [salesModalProgress, setSalesModalProgress] = useState("");
   const [salesParsedRows, setSalesParsedRows] = useState<SalesSummaryRow[] | null>(null);
   const salesModalFileInputRef = useRef<HTMLInputElement>(null);
+  const [salesEntryModalOpen, setSalesEntryModalOpen] = useState(false);
+  const [salesEntryEditingId, setSalesEntryEditingId] = useState<string | null>(null);
+  const [salesEntryDraft, setSalesEntryDraft] = useState<SalesEntryDraft>(() => emptySalesEntryDraft());
+  const [salesEntryBusy, setSalesEntryBusy] = useState(false);
+  const [inventoryModalOpen, setInventoryModalOpen] = useState(false);
+  const [inventoryDraft, setInventoryDraft] = useState<InventoryDraft>(() => emptyInventoryDraft());
+  const [inventoryBusy, setInventoryBusy] = useState(false);
   /** 상품 요약 업로드 모달 (매출 요약과 동일 단계) */
   const [productModalOpen, setProductModalOpen] = useState(false);
   const [productModalPhase, setProductModalPhase] = useState<"pick" | "reading" | "ready" | "saving" | "error">("pick");
@@ -475,6 +638,10 @@ const App = () => {
   const [costModalProgress, setCostModalProgress] = useState("");
   const [costParsedRows, setCostParsedRows] = useState<CostEntryRow[] | null>(null);
   const costModalFileInputRef = useRef<HTMLInputElement>(null);
+  const [costEntryModalOpen, setCostEntryModalOpen] = useState(false);
+  const [costEntryEditingId, setCostEntryEditingId] = useState<string | null>(null);
+  const [costEntryDraft, setCostEntryDraft] = useState<CostEntryDraft>(() => emptyCostEntryDraft());
+  const [costEntryBusy, setCostEntryBusy] = useState(false);
   /** 매장별 데이터 패널 탭 */
   const [storeDataTab, setStoreDataTab] = useState<"sales" | "products" | "costs">("sales");
   /** 첫 loadState 완료 여부 (로컬/배포 최초 접속 로딩) */
@@ -606,6 +773,14 @@ const App = () => {
     () => activeMonth?.stores.find((store) => store.id === activeStoreId) ?? null,
     [activeMonth, activeStoreId],
   );
+  const salesRowsForDisplay = useMemo(
+    () => sortSalesRows([...(activeStore?.salesSummaryRows ?? [])]),
+    [activeStore?.salesSummaryRows],
+  );
+  const costRowsForDisplay = useMemo(
+    () => sortCostRows([...(activeStore?.costEntryRows ?? [])]),
+    [activeStore?.costEntryRows],
+  );
 
   const persistProductRows = async (
     rows: ProductSummaryRow[],
@@ -641,12 +816,47 @@ const App = () => {
     if (!activeMonthId || !activeStoreId) {
       return { ok: false, message: "월 또는 매장이 선택되지 않았습니다." };
     }
+    const activeStoreCurrent =
+      monthsRef.current
+        .find((m) => m.id === activeMonthId)
+        ?.stores.find((s) => s.id === activeStoreId) ?? null;
+    const manualRows = (activeStoreCurrent?.costEntryRows ?? []).filter((r) => r.entryType === "manual");
+    const mergedRows = sortCostRows([...manualRows, ...rows.map((r) => ({ ...r, entryType: "upload" as const }))]);
     const next = monthsRef.current.map((month) => {
       if (month.id !== activeMonthId) return month;
       return {
         ...month,
         stores: month.stores.map((s) =>
-          s.id === activeStoreId ? { ...s, costEntryRows: rows } : s,
+          s.id === activeStoreId ? { ...s, costEntryRows: mergedRows } : s,
+        ),
+      };
+    });
+    monthsRef.current = next;
+    setMonths(next);
+    setSyncError("");
+    try {
+      await saveState(next);
+      return { ok: true };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown save error";
+      setSyncError(message);
+      return { ok: false, message };
+    }
+  };
+
+  const persistAllCostRows = async (
+    rows: CostEntryRow[],
+  ): Promise<{ ok: true } | { ok: false; message: string }> => {
+    if (!activeMonthId || !activeStoreId) {
+      return { ok: false, message: "월 또는 매장이 선택되지 않았습니다." };
+    }
+    const sorted = sortCostRows(rows);
+    const next = monthsRef.current.map((month) => {
+      if (month.id !== activeMonthId) return month;
+      return {
+        ...month,
+        stores: month.stores.map((s) =>
+          s.id === activeStoreId ? { ...s, costEntryRows: sorted } : s,
         ),
       };
     });
@@ -669,12 +879,79 @@ const App = () => {
     if (!activeMonthId || !activeStoreId) {
       return { ok: false, message: "월 또는 매장이 선택되지 않았습니다." };
     }
+    const activeStoreCurrent =
+      monthsRef.current
+        .find((m) => m.id === activeMonthId)
+        ?.stores.find((s) => s.id === activeStoreId) ?? null;
+    const manualRows = (activeStoreCurrent?.salesSummaryRows ?? []).filter((r) => r.entryType === "manual");
+    const mergedRows = sortSalesRows([
+      ...manualRows,
+      ...rows.map((r) => ({ ...r, entryType: "upload" as const })),
+    ]);
     const next = monthsRef.current.map((month) => {
       if (month.id !== activeMonthId) return month;
       return {
         ...month,
         stores: month.stores.map((s) =>
-          s.id === activeStoreId ? { ...s, salesSummaryRows: rows } : s,
+          s.id === activeStoreId ? { ...s, salesSummaryRows: mergedRows } : s,
+        ),
+      };
+    });
+    monthsRef.current = next;
+    setMonths(next);
+    setSyncError("");
+    try {
+      await saveState(next);
+      return { ok: true };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown save error";
+      setSyncError(message);
+      return { ok: false, message };
+    }
+  };
+
+  const persistAllSalesRows = async (
+    rows: SalesSummaryRow[],
+  ): Promise<{ ok: true } | { ok: false; message: string }> => {
+    if (!activeMonthId || !activeStoreId) {
+      return { ok: false, message: "월 또는 매장이 선택되지 않았습니다." };
+    }
+    const sorted = sortSalesRows(rows);
+    const next = monthsRef.current.map((month) => {
+      if (month.id !== activeMonthId) return month;
+      return {
+        ...month,
+        stores: month.stores.map((s) =>
+          s.id === activeStoreId ? { ...s, salesSummaryRows: sorted } : s,
+        ),
+      };
+    });
+    monthsRef.current = next;
+    setMonths(next);
+    setSyncError("");
+    try {
+      await saveState(next);
+      return { ok: true };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown save error";
+      setSyncError(message);
+      return { ok: false, message };
+    }
+  };
+
+  const persistStoreInventory = async (
+    menuInventory: number,
+    beverageInventory: number,
+  ): Promise<{ ok: true } | { ok: false; message: string }> => {
+    if (!activeMonthId || !activeStoreId) {
+      return { ok: false, message: "월 또는 매장이 선택되지 않았습니다." };
+    }
+    const next = monthsRef.current.map((month) => {
+      if (month.id !== activeMonthId) return month;
+      return {
+        ...month,
+        stores: month.stores.map((s) =>
+          s.id === activeStoreId ? { ...s, menuInventory, beverageInventory } : s,
         ),
       };
     });
@@ -717,7 +994,7 @@ const App = () => {
 
   const openProductUploadModal = () => {
     if (!activeMonthId || !activeStoreId || !activeStore) return;
-    if (productModalOpen || salesModalOpen || costModalOpen) return;
+    if (productModalOpen || salesModalOpen || costModalOpen || salesEntryModalOpen) return;
     setProductModalOpen(true);
     setProductModalPhase("pick");
     setProductModalProgress("파일을 선택해 주세요.");
@@ -799,7 +1076,7 @@ const App = () => {
 
   const openCostUploadModal = () => {
     if (!activeMonthId || !activeStoreId || !activeStore) return;
-    if (costModalOpen || salesModalOpen || productModalOpen) return;
+    if (costModalOpen || salesModalOpen || productModalOpen || salesEntryModalOpen) return;
     setCostModalOpen(true);
     setCostModalPhase("pick");
     setCostModalProgress("파일을 선택해 주세요.");
@@ -847,7 +1124,7 @@ const App = () => {
       await new Promise((r) => requestAnimationFrame(() => r(undefined)));
       setCostModalProgress("시트에서 행을 불러오는 중…");
       const rows = await parseCostFile(file);
-      setCostModalProgress("결제일·비용 종류·업체명·합계금액 등 컬럼을 확인하는 중…");
+      setCostModalProgress("결제일·비용계정·업체명·합계금액 등 컬럼을 확인하는 중…");
       await new Promise((r) => setTimeout(r, 200));
       setCostParsedRows(rows);
       setCostModalPhase("ready");
@@ -879,9 +1156,101 @@ const App = () => {
     resetCostModal();
   };
 
+  const openCreateCostEntryModal = () => {
+    if (!activeStore || costEntryBusy) return;
+    setCostEntryEditingId(null);
+    setCostEntryDraft(emptyCostEntryDraft());
+    setCostEntryModalOpen(true);
+  };
+
+  const openEditCostEntryModal = (row: CostEntryRow) => {
+    setCostEntryEditingId(row.id);
+    setCostEntryDraft({
+      paymentDate: row.paymentDate,
+      expenseKind: row.expenseKind,
+      vendorName: row.vendorName,
+      totalAmount: String(row.totalAmount),
+      supplyAmount: String(row.supplyAmount),
+      vat: String(row.vat),
+      taxMode: row.taxMode,
+      payStatus: row.payStatus,
+      memo: row.memo,
+    });
+    setCostEntryModalOpen(true);
+  };
+
+  const closeCostEntryModal = () => {
+    if (costEntryBusy) return;
+    setCostEntryModalOpen(false);
+    setCostEntryEditingId(null);
+    setCostEntryDraft(emptyCostEntryDraft());
+  };
+  const onCostEntryDraftChange = (patch: Partial<CostEntryDraft>) => {
+    setCostEntryDraft((prev) => {
+      const next: CostEntryDraft = { ...prev, ...patch };
+      const derived = calcSupplyAndVat(next.totalAmount, next.taxMode);
+      next.supplyAmount = String(derived.supplyAmount);
+      next.vat = String(derived.vat);
+      return next;
+    });
+  };
+
+  const onCostEntrySave = async () => {
+    if (!activeStore) return;
+    setCostEntryBusy(true);
+    const existing = [...(activeStore.costEntryRows ?? [])];
+    const derived = calcSupplyAndVat(costEntryDraft.totalAmount, costEntryDraft.taxMode);
+    const asRow: CostEntryRow = {
+      id: costEntryEditingId ?? nowId(),
+      paymentDate: formatBusinessDay(costEntryDraft.paymentDate),
+      expenseKind: costEntryDraft.expenseKind.trim(),
+      vendorName: costEntryDraft.vendorName.trim(),
+      totalAmount: toNumber(costEntryDraft.totalAmount),
+      supplyAmount: derived.supplyAmount,
+      vat: derived.vat,
+      taxMode: costEntryDraft.taxMode.trim(),
+      payStatus: costEntryDraft.payStatus.trim(),
+      memo: costEntryDraft.memo.trim(),
+      entryType: "manual",
+      manualOrder:
+        costEntryEditingId === null
+          ? existing
+              .filter((r) => r.entryType === "manual")
+              .reduce((max, r) => Math.max(max, r.manualOrder ?? 0), 0) + 1
+          : existing.find((r) => r.id === costEntryEditingId)?.manualOrder ?? 0,
+    };
+
+    const next =
+      costEntryEditingId === null
+        ? [asRow, ...existing]
+        : existing.map((row) => (row.id === costEntryEditingId ? asRow : row));
+    const result = await persistAllCostRows(next);
+    setCostEntryBusy(false);
+    if (!result.ok) {
+      window.alert(result.message);
+      return;
+    }
+    closeCostEntryModal();
+  };
+
+  const onCostEntryDelete = async () => {
+    if (!activeStore || !costEntryEditingId) return;
+    if (!window.confirm("해당 비용을 삭제하사겠습니까?")) return;
+    setCostEntryBusy(true);
+    const existing = [...(activeStore.costEntryRows ?? [])];
+    const next = existing.filter((row) => row.id !== costEntryEditingId);
+    const result = await persistAllCostRows(next);
+    setCostEntryBusy(false);
+    if (!result.ok) {
+      window.alert(result.message);
+      return;
+    }
+    closeCostEntryModal();
+  };
+
   const openSalesUploadModal = () => {
     if (!activeMonthId || !activeStoreId || !activeStore) return;
-    if (salesModalOpen || productModalOpen || costModalOpen) return;
+    if (salesModalOpen || productModalOpen || costModalOpen || salesEntryModalOpen) return;
     setSalesModalOpen(true);
     setSalesModalPhase("pick");
     setSalesModalProgress("파일을 선택해 주세요.");
@@ -959,6 +1328,126 @@ const App = () => {
     setSalesModalProgress("모든 작업이 완료되었습니다.");
     await new Promise((r) => setTimeout(r, 450));
     resetSalesModal();
+  };
+
+  const openCreateSalesEntryModal = () => {
+    if (!activeStore || salesEntryBusy) return;
+    setSalesEntryEditingId(null);
+    setSalesEntryDraft(emptySalesEntryDraft());
+    setSalesEntryModalOpen(true);
+  };
+
+  const openEditSalesEntryModal = (row: SalesSummaryRow) => {
+    const derived = calcSalesDerived(String(row.paymentAmount), String(row.discount));
+    setSalesEntryEditingId(row.id);
+    setSalesEntryDraft({
+      businessDay: row.businessDay,
+      total: String(derived.total),
+      paymentAmount: String(row.paymentAmount),
+      supplyAmount: String(derived.supplyAmount),
+      vat: String(derived.vat),
+      discount: String(row.discount),
+      paymentMethod:
+        row.paymentMethod === "현금" || row.paymentMethod === "기타" ? row.paymentMethod : "카드",
+    });
+    setSalesEntryModalOpen(true);
+  };
+
+  const closeSalesEntryModal = () => {
+    if (salesEntryBusy) return;
+    setSalesEntryModalOpen(false);
+    setSalesEntryEditingId(null);
+    setSalesEntryDraft(emptySalesEntryDraft());
+  };
+
+  const onSalesEntryDraftChange = (patch: Partial<SalesEntryDraft>) => {
+    setSalesEntryDraft((prev) => {
+      const next = { ...prev, ...patch };
+      const derived = calcSalesDerived(next.paymentAmount, next.discount);
+      next.total = String(derived.total);
+      next.supplyAmount = String(derived.supplyAmount);
+      next.vat = String(derived.vat);
+      return next;
+    });
+  };
+
+  const onSalesEntrySave = async () => {
+    if (!activeStore) return;
+    setSalesEntryBusy(true);
+    const existing = [...(activeStore.salesSummaryRows ?? [])];
+    const derived = calcSalesDerived(salesEntryDraft.paymentAmount, salesEntryDraft.discount);
+    const asRow: SalesSummaryRow = {
+      id: salesEntryEditingId ?? nowId(),
+      businessDay: formatBusinessDay(salesEntryDraft.businessDay),
+      total: derived.total,
+      paymentAmount: derived.paymentAmount,
+      supplyAmount: derived.supplyAmount,
+      vat: derived.vat,
+      discount: derived.discount,
+      paymentMethod: salesEntryDraft.paymentMethod,
+      entryType: "manual",
+      manualOrder:
+        salesEntryEditingId === null
+          ? existing
+              .filter((r) => r.entryType === "manual")
+              .reduce((max, r) => Math.max(max, r.manualOrder ?? 0), 0) + 1
+          : existing.find((r) => r.id === salesEntryEditingId)?.manualOrder ?? 0,
+    };
+    const next =
+      salesEntryEditingId === null
+        ? [asRow, ...existing]
+        : existing.map((row) => (row.id === salesEntryEditingId ? asRow : row));
+    const result = await persistAllSalesRows(next);
+    setSalesEntryBusy(false);
+    if (!result.ok) {
+      window.alert(result.message);
+      return;
+    }
+    closeSalesEntryModal();
+  };
+
+  const onSalesEntryDelete = async () => {
+    if (!activeStore || !salesEntryEditingId) return;
+    if (!window.confirm("해당 매출을 삭제하시겠습니까?")) return;
+    setSalesEntryBusy(true);
+    const next = [...(activeStore.salesSummaryRows ?? [])].filter((row) => row.id !== salesEntryEditingId);
+    const result = await persistAllSalesRows(next);
+    setSalesEntryBusy(false);
+    if (!result.ok) {
+      window.alert(result.message);
+      return;
+    }
+    closeSalesEntryModal();
+  };
+
+  const openInventoryModal = () => {
+    if (!activeStore) return;
+    setInventoryDraft({
+      menuInventory:
+        activeStore.menuInventory !== undefined ? String(Math.round(activeStore.menuInventory)) : "",
+      beverageInventory:
+        activeStore.beverageInventory !== undefined ? String(Math.round(activeStore.beverageInventory)) : "",
+    });
+    setInventoryModalOpen(true);
+  };
+
+  const closeInventoryModal = () => {
+    if (inventoryBusy) return;
+    setInventoryModalOpen(false);
+    setInventoryDraft(emptyInventoryDraft());
+  };
+
+  const onInventorySave = async () => {
+    setInventoryBusy(true);
+    const menuInventory = Math.round(toNumber(inventoryDraft.menuInventory));
+    const beverageInventory = Math.round(toNumber(inventoryDraft.beverageInventory));
+    const result = await persistStoreInventory(menuInventory, beverageInventory);
+    setInventoryBusy(false);
+    if (!result.ok) {
+      window.alert(result.message);
+      return;
+    }
+    closeInventoryModal();
   };
 
   const salesTabLoading = salesModalOpen && (salesModalPhase === "reading" || salesModalPhase === "saving");
@@ -1166,7 +1655,9 @@ const App = () => {
                         </span>
                         <button
                           type="button"
-                          disabled={salesModalOpen || productModalOpen || costModalOpen}
+                          disabled={
+                            salesModalOpen || productModalOpen || costModalOpen || salesEntryModalOpen || inventoryModalOpen
+                          }
                           onClick={openSalesUploadModal}
                         >
                           upload
@@ -1174,9 +1665,55 @@ const App = () => {
                         <span aria-hidden={true}>{"\u00A0\u00A0"}</span>
                         {(activeStore.salesSummaryRows?.length ?? 0) > 0 && (
                           <span className="sales-sum-inline">
-                            합계sum: {money.format(activeStore.salesSummaryRows!.reduce((a, r) => a + r.total, 0))}
+                            합계sum:{" "}
+                            {money.format(
+                              Math.round(
+                                activeStore.salesSummaryRows!.reduce((a, r) => a + r.supplyAmount, 0),
+                              ),
+                            )}
                           </span>
                         )}
+                        {(activeStore.menuInventory !== undefined ||
+                          activeStore.beverageInventory !== undefined) && (
+                          <span className="sales-sum-inline">
+                            {"\u00A0\u00A0"}메뉴재고: {money.format(Math.round(activeStore.menuInventory ?? 0))}
+                            {"\u00A0|\u00A0"}음료주류재고 : {money.format(Math.round(activeStore.beverageInventory ?? 0))}
+                          </span>
+                        )}
+                        <span className="sales-heading-grow" />
+                        <button
+                          type="button"
+                          className="btn-secondary"
+                          disabled={
+                            salesModalOpen ||
+                            productModalOpen ||
+                            costModalOpen ||
+                            salesEntryModalOpen ||
+                            inventoryModalOpen ||
+                            salesEntryBusy ||
+                            inventoryBusy
+                          }
+                          onClick={openInventoryModal}
+                        >
+                          재고 입력
+                        </button>
+                        <span aria-hidden={true}>{"\u00A0\u00A0"}</span>
+                        <button
+                          type="button"
+                          className="btn-secondary"
+                          disabled={
+                            salesModalOpen ||
+                            productModalOpen ||
+                            costModalOpen ||
+                            salesEntryModalOpen ||
+                            inventoryModalOpen ||
+                            salesEntryBusy ||
+                            inventoryBusy
+                          }
+                          onClick={openCreateSalesEntryModal}
+                        >
+                          단건 등록
+                        </button>
                       </>
                     )}
                   </div>
@@ -1198,9 +1735,21 @@ const App = () => {
                             </tr>
                           </thead>
                           <tbody>
-                            {activeStore.salesSummaryRows!.map((row) => (
+                            {salesRowsForDisplay.map((row) => (
                               <tr key={row.id}>
-                                <td>{row.businessDay}</td>
+                                <td>
+                                  {row.entryType === "manual" ? (
+                                    <button
+                                      type="button"
+                                      className="cost-date-link"
+                                      onClick={() => openEditSalesEntryModal(row)}
+                                    >
+                                      {row.businessDay}
+                                    </button>
+                                  ) : (
+                                    row.businessDay
+                                  )}
+                                </td>
                                 <td>{money.format(row.total)}</td>
                                 <td>{money.format(row.paymentAmount)}</td>
                                 <td>{money.format(row.supplyAmount)}</td>
@@ -1240,7 +1789,9 @@ const App = () => {
                         </span>
                         <button
                           type="button"
-                          disabled={salesModalOpen || productModalOpen || costModalOpen}
+                          disabled={
+                            salesModalOpen || productModalOpen || costModalOpen || salesEntryModalOpen || inventoryModalOpen
+                          }
                           onClick={openProductUploadModal}
                         >
                           upload
@@ -1250,7 +1801,9 @@ const App = () => {
                           <span className="sales-sum-inline">
                             총매출sum:{" "}
                             {money.format(
-                              activeStore.productSummaryRows!.reduce((a, r) => a + r.totalSales, 0),
+                              Math.round(
+                                activeStore.productSummaryRows!.reduce((a, r) => a + r.actualSales, 0) / 1.1,
+                              ),
                             )}
                           </span>
                         )}
@@ -1313,10 +1866,30 @@ const App = () => {
                         </span>
                         <button
                           type="button"
-                          disabled={salesModalOpen || productModalOpen || costModalOpen}
+                          disabled={
+                            salesModalOpen || productModalOpen || costModalOpen || salesEntryModalOpen || inventoryModalOpen
+                          }
                           onClick={openCostUploadModal}
                         >
                           upload
+                        </button>
+                        <span aria-hidden={true}>{"\u00A0\u00A0"}</span>
+                        {(activeStore.costEntryRows?.length ?? 0) > 0 && (
+                          <span className="sales-sum-inline">
+                            공급가액sum:{" "}
+                            {money.format(
+                              Math.round(activeStore.costEntryRows!.reduce((acc, row) => acc + row.supplyAmount, 0)),
+                            )}
+                          </span>
+                        )}
+                        <span className="sales-heading-grow" />
+                        <button
+                          type="button"
+                          className="btn-secondary"
+                          disabled={salesModalOpen || productModalOpen || costModalOpen || costEntryBusy}
+                          onClick={openCreateCostEntryModal}
+                        >
+                          단건 등록
                         </button>
                       </>
                     )}
@@ -1330,66 +1903,39 @@ const App = () => {
                           <thead>
                             <tr>
                               <th>결제일</th>
-                              <th>비용 종류</th>
+                              <th>비용계정</th>
                               <th>업체명</th>
                               <th>합계금액</th>
                               <th>공급가액</th>
                               <th>부가세</th>
-                              <th>과세/부과세</th>
-                              <th>결제/미결제</th>
+                              <th>과세여부</th>
+                              <th>결제여부</th>
                               <th>메모</th>
                             </tr>
                           </thead>
                           <tbody>
-                            {activeStore.costEntryRows!.map((row) => (
+                            {costRowsForDisplay.map((row) => (
                               <tr key={row.id}>
-                                <td>{row.paymentDate}</td>
                                 <td>
-                                  <select
-                                    className="data-table-select"
-                                    disabled
-                                    value={row.expenseKind}
-                                    aria-label="비용 종류"
-                                  >
-                                    {withValueOption(COST_EXPENSE_KIND_PRESETS, row.expenseKind).map((opt) => (
-                                      <option key={opt} value={opt}>
-                                        {opt}
-                                      </option>
-                                    ))}
-                                  </select>
+                                  {row.entryType === "manual" ? (
+                                    <button
+                                      type="button"
+                                      className="cost-date-link"
+                                      onClick={() => openEditCostEntryModal(row)}
+                                    >
+                                      {row.paymentDate}
+                                    </button>
+                                  ) : (
+                                    row.paymentDate
+                                  )}
                                 </td>
+                                <td>{row.expenseKind}</td>
                                 <td>{row.vendorName}</td>
-                                <td>{money.format(row.totalAmount)}</td>
-                                <td>{money.format(row.supplyAmount)}</td>
-                                <td>{money.format(row.vat)}</td>
-                                <td>
-                                  <select
-                                    className="data-table-select"
-                                    disabled
-                                    value={row.taxMode}
-                                    aria-label="과세/부과세"
-                                  >
-                                    {withValueOption(COST_TAX_MODE_PRESETS, row.taxMode).map((opt) => (
-                                      <option key={opt} value={opt}>
-                                        {opt}
-                                      </option>
-                                    ))}
-                                  </select>
-                                </td>
-                                <td>
-                                  <select
-                                    className="data-table-select"
-                                    disabled
-                                    value={row.payStatus}
-                                    aria-label="결제/미결제"
-                                  >
-                                    {withValueOption(COST_PAY_STATUS_PRESETS, row.payStatus).map((opt) => (
-                                      <option key={opt} value={opt}>
-                                        {opt}
-                                      </option>
-                                    ))}
-                                  </select>
-                                </td>
+                                <td>{money.format(Math.round(row.totalAmount))}</td>
+                                <td>{money.format(Math.round(row.supplyAmount))}</td>
+                                <td>{money.format(Math.round(row.vat))}</td>
+                                <td>{row.taxMode}</td>
+                                <td>{row.payStatus}</td>
                                 <td>{row.memo}</td>
                               </tr>
                             ))}
@@ -1414,6 +1960,275 @@ const App = () => {
             </div>
           </section>
         </>
+      )}
+
+      {salesEntryModalOpen && activeStore && (
+        <div
+          className="modal-backdrop"
+          role="presentation"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) closeSalesEntryModal();
+          }}
+        >
+          <div
+            className="modal-panel"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="sales-entry-modal-title"
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <div className="modal-header">
+              <h3 id="sales-entry-modal-title">{salesEntryEditingId ? "매출 수정" : "매출 단건 등록"}</h3>
+              <button type="button" className="modal-close" aria-label="닫기" onClick={closeSalesEntryModal}>
+                ×
+              </button>
+            </div>
+            <div className="cost-form-grid">
+              <label>
+                영업일
+                <input
+                  type="date"
+                  value={salesEntryDraft.businessDay}
+                  onChange={(e) => onSalesEntryDraftChange({ businessDay: e.target.value })}
+                />
+              </label>
+              <label>
+                결제수단
+                <select
+                  value={salesEntryDraft.paymentMethod}
+                  onChange={(e) =>
+                    onSalesEntryDraftChange({
+                      paymentMethod: e.target.value as SalesEntryDraft["paymentMethod"],
+                    })
+                  }
+                >
+                  <option value="카드">카드</option>
+                  <option value="현금">현금</option>
+                  <option value="기타">기타</option>
+                </select>
+              </label>
+              <label>
+                결제금액
+                <input
+                  value={salesEntryDraft.paymentAmount}
+                  onChange={(e) => onSalesEntryDraftChange({ paymentAmount: e.target.value })}
+                />
+              </label>
+              <label>
+                할인
+                <input
+                  value={salesEntryDraft.discount}
+                  onChange={(e) => onSalesEntryDraftChange({ discount: e.target.value })}
+                />
+              </label>
+              <label>
+                합계
+                <input value={salesEntryDraft.total} disabled />
+              </label>
+              <label>
+                공급가액
+                <input value={salesEntryDraft.supplyAmount} disabled />
+              </label>
+              <label>
+                부가세
+                <input value={salesEntryDraft.vat} disabled />
+              </label>
+            </div>
+            <div className="modal-actions">
+              {salesEntryEditingId && (
+                <button
+                  type="button"
+                  className="btn-danger"
+                  disabled={salesEntryBusy}
+                  onClick={() => void onSalesEntryDelete()}
+                >
+                  삭제
+                </button>
+              )}
+              <button type="button" className="btn-save" disabled={salesEntryBusy} onClick={() => void onSalesEntrySave()}>
+                저장
+              </button>
+              <button type="button" className="btn-secondary" disabled={salesEntryBusy} onClick={closeSalesEntryModal}>
+                취소
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {inventoryModalOpen && activeStore && (
+        <div
+          className="modal-backdrop"
+          role="presentation"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) closeInventoryModal();
+          }}
+        >
+          <div
+            className="modal-panel"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="inventory-modal-title"
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <div className="modal-header">
+              <h3 id="inventory-modal-title">재고 입력</h3>
+              <button type="button" className="modal-close" aria-label="닫기" onClick={closeInventoryModal}>
+                ×
+              </button>
+            </div>
+            <div className="cost-form-grid">
+              <label>
+                메뉴 재고 (공급가액)
+                <input
+                  value={inventoryDraft.menuInventory}
+                  onChange={(e) => setInventoryDraft((p) => ({ ...p, menuInventory: e.target.value }))}
+                />
+              </label>
+              <label>
+                음료주류 재고 (공급가액)
+                <input
+                  value={inventoryDraft.beverageInventory}
+                  onChange={(e) => setInventoryDraft((p) => ({ ...p, beverageInventory: e.target.value }))}
+                />
+              </label>
+            </div>
+            <div className="modal-actions">
+              <button type="button" className="btn-save" disabled={inventoryBusy} onClick={() => void onInventorySave()}>
+                저장
+              </button>
+              <button type="button" className="btn-secondary" disabled={inventoryBusy} onClick={closeInventoryModal}>
+                취소
+              </button>
+            </div>
+            {inventoryBusy && (
+              <div className="modal-progress-bar" aria-hidden={true}>
+                <span className="modal-progress-bar-fill modal-progress-bar-indeterminate" />
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {costEntryModalOpen && activeStore && (
+        <div
+          className="modal-backdrop"
+          role="presentation"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) closeCostEntryModal();
+          }}
+        >
+          <div
+            className="modal-panel"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="cost-entry-modal-title"
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <div className="modal-header">
+              <h3 id="cost-entry-modal-title">{costEntryEditingId ? "비용 수정" : "비용 단건 등록"}</h3>
+              <button type="button" className="modal-close" aria-label="닫기" onClick={closeCostEntryModal}>
+                ×
+              </button>
+            </div>
+            <div className="cost-form-grid">
+              <label>
+                결제일
+                <input
+                  type="date"
+                  value={costEntryDraft.paymentDate}
+                  onChange={(e) => onCostEntryDraftChange({ paymentDate: e.target.value })}
+                />
+              </label>
+              <label>
+                비용계정
+                <select
+                  value={costEntryDraft.expenseKind}
+                  onChange={(e) => onCostEntryDraftChange({ expenseKind: e.target.value })}
+                >
+                  <option value="">선택</option>
+                  {COST_ACCOUNT_OPTIONS.map((opt) => (
+                    <option key={opt} value={opt}>
+                      {opt}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                업체명
+                <input
+                  value={costEntryDraft.vendorName}
+                  onChange={(e) => onCostEntryDraftChange({ vendorName: e.target.value })}
+                />
+              </label>
+              <label>
+                합계금액
+                <input
+                  value={costEntryDraft.totalAmount}
+                  onChange={(e) => onCostEntryDraftChange({ totalAmount: e.target.value })}
+                />
+              </label>
+              <label>
+                공급가액
+                <input value={costEntryDraft.supplyAmount} disabled />
+              </label>
+              <label>
+                부가세
+                <input value={costEntryDraft.vat} disabled />
+              </label>
+              <label>
+                과세여부
+                <select
+                  value={costEntryDraft.taxMode}
+                  onChange={(e) => onCostEntryDraftChange({ taxMode: e.target.value })}
+                >
+                  <option value="과세">과세</option>
+                  <option value="비과세">비과세</option>
+                </select>
+              </label>
+              <label>
+                결제여부
+                <select
+                  value={costEntryDraft.payStatus}
+                  onChange={(e) => onCostEntryDraftChange({ payStatus: e.target.value })}
+                >
+                  <option value="결제">결제</option>
+                  <option value="미결제">미결제</option>
+                </select>
+              </label>
+              <label className="cost-form-full">
+                메모
+                <input
+                  value={costEntryDraft.memo}
+                  onChange={(e) => onCostEntryDraftChange({ memo: e.target.value })}
+                />
+              </label>
+            </div>
+            <div className="modal-actions">
+              {costEntryEditingId && (
+                <button type="button" className="btn-danger" disabled={costEntryBusy} onClick={() => void onCostEntryDelete()}>
+                  삭제
+                </button>
+              )}
+              <button type="button" className="btn-save" disabled={costEntryBusy} onClick={() => void onCostEntrySave()}>
+                저장
+              </button>
+              <button type="button" className="btn-secondary" disabled={costEntryBusy} onClick={closeCostEntryModal}>
+                취소
+              </button>
+            </div>
+            {costEntryBusy && (
+              <>
+                <p className="modal-progress" role="status" aria-live="polite">
+                  저장 처리 중…
+                </p>
+                <div className="modal-progress-bar" aria-hidden={true}>
+                  <span className="modal-progress-bar-fill modal-progress-bar-indeterminate" />
+                </div>
+              </>
+            )}
+          </div>
+        </div>
       )}
 
       {costModalOpen && activeStore && (
