@@ -21,6 +21,7 @@ interface ProductSummaryRow {
   totalSales: number;
   actualSales: number;
   discount: number;
+  division?: "" | "메뉴" | "음료주류" | "기타";
 }
 
 /** 비용 등록: 헤더(결제일·비용계정·…) 다음 행부터 데이터 (9컬럼) */
@@ -39,6 +40,31 @@ interface CostEntryRow {
   manualOrder?: number;
 }
 
+interface CardHistoryRow {
+  id: string;
+  usedDate: string;
+  approvalNumber: string;
+  usedCard: string;
+  merchant: string;
+  salesType: string;
+  approvalAmount: number;
+  paymentAmount: number;
+  expenseAccount?: string;
+  appliedStore?: string;
+}
+
+interface EvidenceRow {
+  id: string;
+  date: string;
+  approvalNumber: string;
+  vendorName: string;
+  totalAmount: number;
+  supplyAmount: number;
+  taxAmount: number;
+  evidenceType: "세금계산서" | "계산서" | "기타증빙";
+  appliedStore?: string;
+}
+
 interface StoreRecord {
   id: string;
   name: string;
@@ -53,6 +79,8 @@ interface MonthRecord {
   id: string;
   label: string;
   stores: StoreRecord[];
+  cardHistoryRows?: CardHistoryRow[];
+  evidenceRows?: EvidenceRow[];
 }
 
 const nowId = () => `${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -124,6 +152,33 @@ const findCostHeaderRowIndex = (matrix: unknown[][]): number => {
     const row = matrix[i] ?? [];
     const cells = row.map((c) => normalize(String(c)));
     if (cells.includes("결제일") && (cells.includes("비용계정") || cells.includes("비용종류"))) return i;
+  }
+  return 0;
+};
+
+const findCardHeaderRowIndex = (matrix: unknown[][]): number => {
+  for (let i = 0; i < Math.min(30, matrix.length); i++) {
+    const row = matrix[i] ?? [];
+    const cells = row.map((c) => normalize(String(c)));
+    if (cells.includes("이용일자") && (cells.includes("이용카드") || cells.includes("이용가맹점"))) return i;
+  }
+  return 0;
+};
+
+const findEvidenceHeaderRowIndex = (matrix: unknown[][]): number => {
+  for (let i = 0; i < Math.min(40, matrix.length); i++) {
+    const row = matrix[i] ?? [];
+    const cells = row.map((c) => normalize(String(c)));
+    if (cells.includes("작성일자") && cells.includes("승인번호") && cells.includes("발급일자")) return i;
+  }
+  return 0;
+};
+
+const findOtherEvidenceHeaderRowIndex = (matrix: unknown[][]): number => {
+  for (let i = 0; i < Math.min(40, matrix.length); i++) {
+    const row = matrix[i] ?? [];
+    const cells = row.map((c) => normalize(String(c)));
+    if (cells.includes("매입일시") && cells.includes("사용자명")) return i;
   }
   return 0;
 };
@@ -248,6 +303,7 @@ const parseProductFile = async (file: File): Promise<ProductSummaryRow[]> => {
         totalSales,
         actualSales,
         discount,
+        division: "" as const,
       };
     })
     .filter((r) => {
@@ -344,6 +400,156 @@ const parseCostFile = async (file: File): Promise<CostEntryRow[]> => {
     });
 };
 
+const parseCardFile = async (file: File): Promise<CardHistoryRow[]> => {
+  const buffer = await file.arrayBuffer();
+  const workbook = XLSX.read(buffer, { type: "array" });
+  const firstSheet = workbook.SheetNames[0];
+  if (!firstSheet) return [];
+  const sheet = workbook.Sheets[firstSheet];
+  const matrix = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, defval: "", raw: true });
+  if (!matrix.length) return [];
+  const headerRowIdx = findCardHeaderRowIndex(matrix);
+  const rows = matrixRowsToObjects(matrix, headerRowIdx);
+
+  return rows
+    .map((row) => {
+      const approvalRaw = findCell(row, ["승인금액(취소)", "승인금액", "승인 금액(취소)"]);
+      const usedDate = formatBusinessDay(findCell(row, ["이용일자", "이용 일자", "승인일자"]));
+      const approvalNumber = String(
+        findCell(row, ["승인번호", "승인 번호", "승인NO", "승인No", "승인no"]) ?? "",
+      ).trim();
+      const usedCard = String(findCell(row, ["이용카드", "카드", "카드명"]) ?? "").trim();
+      const merchant = String(findCell(row, ["이용가맹점", "가맹점", "가맹점명"]) ?? "").trim();
+      const salesType = String(findCell(row, ["매출구분", "매출 구분"]) ?? "").trim();
+      const approvalText = String(approvalRaw ?? "").trim();
+      const hasCancelPattern = approvalText.includes("(") && approvalText.includes(")") && approvalText.includes("-");
+      const approvalAmount = hasCancelPattern ? 0 : toNumber(approvalRaw);
+      const paymentAmount = toNumber(
+        findCell(row, ["결제금액(해외건)", "결제금액", "결제 금액(해외건)", "결제 금액"]),
+      );
+
+      return {
+        id: nowId(),
+        usedDate,
+        approvalNumber,
+        usedCard,
+        merchant,
+        salesType,
+        approvalAmount,
+        paymentAmount,
+        expenseAccount: "",
+        appliedStore: "",
+      };
+    })
+    .filter((r) => {
+      return (
+        r.usedDate !== "" ||
+        r.approvalNumber !== "" ||
+        r.usedCard !== "" ||
+        r.merchant !== "" ||
+        r.salesType !== "" ||
+        r.approvalAmount !== 0 ||
+        r.paymentAmount !== 0
+      );
+    });
+};
+
+const parseEvidenceFile = async (
+  file: File,
+  kind: EvidenceRow["evidenceType"],
+): Promise<EvidenceRow[]> => {
+  const buffer = await file.arrayBuffer();
+  const workbook = XLSX.read(buffer, { type: "array" });
+  const firstSheet = workbook.SheetNames[0];
+  if (!firstSheet) return [];
+  const sheet = workbook.Sheets[firstSheet];
+  const matrix = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, defval: "", raw: true });
+  if (!matrix.length) return [];
+  const headerRowIdx =
+    kind === "기타증빙" ? findOtherEvidenceHeaderRowIndex(matrix) : findEvidenceHeaderRowIndex(matrix);
+  const rows = matrixRowsToObjects(matrix, headerRowIdx);
+  const rawRows = matrix.slice(headerRowIdx + 1);
+
+  return rows
+    .map((row, idx) => {
+      const raw = rawRows[idx] ?? [];
+      if (kind === "기타증빙") {
+        const date = formatBusinessDay(findCell(row, ["매입일시", "매입 일시"]));
+        const approvalNumber = String(
+          findCell(row, ["승인번호", "승인 번호", "승인NO", "승인No", "승인no"]) ?? "",
+        ).trim();
+        const vendorName =
+          String(raw[3] ?? "").trim() ||
+          String(findCell(row, ["가맹점명", "가맹점 명", "가맹점"]) ?? "").trim();
+        const totalAmount = toNumber(findCell(row, ["매입금액", "매입 금액"]));
+        const supplyAmount = toNumber(findCell(row, ["공급가액"]));
+        const taxAmount = toNumber(findCell(row, ["부가세", "세액"]));
+        return {
+          id: nowId(),
+          date,
+          approvalNumber,
+          vendorName,
+          totalAmount,
+          supplyAmount,
+          taxAmount,
+          evidenceType: kind,
+          appliedStore: "",
+        };
+      }
+      const date = formatBusinessDay(findCell(row, ["작성일자", "작성 일자"]));
+      const approvalNumber = String(
+        findCell(row, ["승인번호", "승인 번호", "승인NO", "승인No", "승인no"]) ?? "",
+      ).trim();
+      const vendorName = String(raw[6] ?? "").trim() || String(findCell(row, ["상호", "업체명"]) ?? "").trim();
+      const totalAmount = toNumber(findCell(row, ["합계금액", "합계 금액"]));
+      const supplyAmount = toNumber(findCell(row, ["공급가액"]));
+      const taxAmount = kind === "계산서" ? 0 : toNumber(findCell(row, ["세액", "부가세"]));
+      return {
+        id: nowId(),
+        date,
+        approvalNumber,
+        vendorName,
+        totalAmount,
+        supplyAmount,
+        taxAmount,
+        evidenceType: kind,
+        appliedStore: "",
+      };
+    })
+    .filter((r) => {
+      return (
+        r.date !== "" ||
+        r.approvalNumber !== "" ||
+        r.vendorName !== "" ||
+        r.totalAmount !== 0 ||
+        r.supplyAmount !== 0 ||
+        r.taxAmount !== 0
+      );
+    });
+};
+
+const mergeAndSortCardRows = (
+  existing: CardHistoryRow[],
+  incoming: CardHistoryRow[],
+): CardHistoryRow[] => {
+  const byKey = new Map<string, CardHistoryRow>();
+  for (const row of existing) {
+    const key = `${row.approvalNumber}::${row.usedCard}`;
+    byKey.set(key, row);
+  }
+  for (const row of incoming) {
+    const key = `${row.approvalNumber}::${row.usedCard}`;
+    byKey.set(key, row);
+  }
+  const rows = [...byKey.values()];
+  rows.sort((a, b) => {
+    const cardCmp = a.usedCard.localeCompare(b.usedCard, "ko");
+    if (cardCmp !== 0) return cardCmp;
+    return a.usedDate.localeCompare(b.usedDate, "ko");
+  });
+  return rows;
+};
+
 const normalizeSalesRow = (raw: Partial<SalesSummaryRow>): SalesSummaryRow => ({
   id: typeof raw.id === "string" ? raw.id : nowId(),
   businessDay: typeof raw.businessDay === "string" ? raw.businessDay : String(raw.businessDay ?? ""),
@@ -364,6 +570,8 @@ const normalizeProductRow = (raw: Partial<ProductSummaryRow>): ProductSummaryRow
   totalSales: toNumber(raw.totalSales),
   actualSales: toNumber(raw.actualSales),
   discount: toNumber(raw.discount),
+  division:
+    raw.division === "메뉴" || raw.division === "음료주류" || raw.division === "기타" ? raw.division : "",
 });
 
 const normalizeCostEntryRow = (raw: Partial<CostEntryRow>): CostEntryRow => ({
@@ -382,6 +590,71 @@ const normalizeCostEntryRow = (raw: Partial<CostEntryRow>): CostEntryRow => ({
   entryType: raw.entryType === "manual" ? "manual" : "upload",
   manualOrder: typeof raw.manualOrder === "number" && Number.isFinite(raw.manualOrder) ? raw.manualOrder : 0,
 });
+
+const normalizeCardHistoryRow = (raw: Partial<CardHistoryRow>): CardHistoryRow => ({
+  id: typeof raw.id === "string" ? raw.id : nowId(),
+  usedDate: typeof raw.usedDate === "string" ? raw.usedDate : String(raw.usedDate ?? ""),
+  approvalNumber:
+    typeof raw.approvalNumber === "string" ? raw.approvalNumber : String(raw.approvalNumber ?? ""),
+  usedCard: typeof raw.usedCard === "string" ? raw.usedCard : String(raw.usedCard ?? ""),
+  merchant: typeof raw.merchant === "string" ? raw.merchant : String(raw.merchant ?? ""),
+  salesType: typeof raw.salesType === "string" ? raw.salesType : String(raw.salesType ?? ""),
+  approvalAmount: toNumber(raw.approvalAmount),
+  paymentAmount: toNumber(raw.paymentAmount),
+  expenseAccount: typeof raw.expenseAccount === "string" ? raw.expenseAccount : String(raw.expenseAccount ?? ""),
+  appliedStore: typeof raw.appliedStore === "string" ? raw.appliedStore : String(raw.appliedStore ?? ""),
+});
+
+const normalizeEvidenceRow = (raw: Partial<EvidenceRow>): EvidenceRow => ({
+  id: typeof raw.id === "string" ? raw.id : nowId(),
+  date: typeof raw.date === "string" ? raw.date : String(raw.date ?? ""),
+  approvalNumber:
+    typeof raw.approvalNumber === "string" ? raw.approvalNumber : String(raw.approvalNumber ?? ""),
+  vendorName: typeof raw.vendorName === "string" ? raw.vendorName : String(raw.vendorName ?? ""),
+  totalAmount: toNumber(raw.totalAmount),
+  supplyAmount: toNumber(raw.supplyAmount),
+  taxAmount: toNumber(raw.taxAmount),
+  evidenceType:
+    raw.evidenceType === "계산서" || raw.evidenceType === "기타증빙" ? raw.evidenceType : "세금계산서",
+  appliedStore: typeof raw.appliedStore === "string" ? raw.appliedStore : String(raw.appliedStore ?? ""),
+});
+
+const EVIDENCE_TYPE_ORDER: Record<EvidenceRow["evidenceType"], number> = {
+  세금계산서: 0,
+  계산서: 1,
+  기타증빙: 2,
+};
+
+const mergeAndSortEvidenceRows = (existing: EvidenceRow[], incoming: EvidenceRow[]): EvidenceRow[] => {
+  const incomingKeys = new Set(
+    incoming
+      .filter((r) => r.approvalNumber.trim() !== "")
+      .map((r) => `${r.evidenceType}::${r.approvalNumber}`),
+  );
+  const filteredExisting = existing.filter((r) => {
+    if (!r.approvalNumber.trim()) return true;
+    const key = `${r.evidenceType}::${r.approvalNumber}`;
+    return !incomingKeys.has(key);
+  });
+  const rows = [...filteredExisting, ...incoming];
+  rows.sort((a, b) => {
+    const typeCmp = EVIDENCE_TYPE_ORDER[a.evidenceType] - EVIDENCE_TYPE_ORDER[b.evidenceType];
+    if (typeCmp !== 0) return typeCmp;
+    const dateCmp = a.date.localeCompare(b.date, "ko");
+    if (dateCmp !== 0) return dateCmp;
+    return a.vendorName.localeCompare(b.vendorName, "ko");
+  });
+  return rows;
+};
+
+const calcEvidenceSplit = (type: EvidenceRow["evidenceType"], totalRaw: string) => {
+  const total = Math.round(toNumber(totalRaw));
+  if (type === "세금계산서") {
+    const supplyAmount = Math.round(total / 1.1);
+    return { totalAmount: total, supplyAmount, taxAmount: total - supplyAmount };
+  }
+  return { totalAmount: total, supplyAmount: 0, taxAmount: 0 };
+};
 
 const normalizeStore = (raw: unknown): StoreRecord => {
   const s = raw as Record<string, unknown>;
@@ -410,9 +683,15 @@ const normalizeStore = (raw: unknown): StoreRecord => {
 
 const migrateMonthRecord = (raw: Record<string, unknown>): MonthRecord => {
   const stores = Array.isArray(raw.stores) ? (raw.stores as unknown[]).map(normalizeStore) : [];
+  const cardHistoryRows = Array.isArray(raw.cardHistoryRows)
+    ? (raw.cardHistoryRows as Partial<CardHistoryRow>[]).map(normalizeCardHistoryRow)
+    : undefined;
+  const evidenceRows = Array.isArray(raw.evidenceRows)
+    ? (raw.evidenceRows as Partial<EvidenceRow>[]).map(normalizeEvidenceRow)
+    : undefined;
   const label = typeof raw.label === "string" ? raw.label : "";
   const id = typeof raw.id === "string" ? raw.id : nowId();
-  return { id, label, stores };
+  return { id, label, stores, cardHistoryRows, evidenceRows };
 };
 
 const sanitizeMonths = (value: unknown): MonthRecord[] => {
@@ -454,7 +733,11 @@ const mergeStructureWithSalesFromServer = (
   const costsByStoreId = new Map<string, CostEntryRow[] | undefined>();
   const menuInventoryByStoreId = new Map<string, number | undefined>();
   const beverageInventoryByStoreId = new Map<string, number | undefined>();
+  const cardRowsByMonthId = new Map<string, CardHistoryRow[] | undefined>();
+  const evidenceRowsByMonthId = new Map<string, EvidenceRow[] | undefined>();
   for (const m of serverMonths) {
+    cardRowsByMonthId.set(m.id, m.cardHistoryRows);
+    evidenceRowsByMonthId.set(m.id, m.evidenceRows);
     for (const s of m.stores) {
       salesByStoreId.set(s.id, s.salesSummaryRows);
       productsByStoreId.set(s.id, s.productSummaryRows);
@@ -466,6 +749,8 @@ const mergeStructureWithSalesFromServer = (
   return localMonths.map((m) => ({
     id: m.id,
     label: m.label,
+    cardHistoryRows: cardRowsByMonthId.get(m.id),
+    evidenceRows: evidenceRowsByMonthId.get(m.id),
     stores: m.stores.map((s) => ({
       id: s.id,
       name: s.name,
@@ -626,12 +911,38 @@ const App = () => {
   const [inventoryModalOpen, setInventoryModalOpen] = useState(false);
   const [inventoryDraft, setInventoryDraft] = useState<InventoryDraft>(() => emptyInventoryDraft());
   const [inventoryBusy, setInventoryBusy] = useState(false);
+  const [cardModalOpen, setCardModalOpen] = useState(false);
+  const [cardModalPhase, setCardModalPhase] = useState<"pick" | "reading" | "ready" | "saving" | "error">("pick");
+  const [cardModalProgress, setCardModalProgress] = useState("");
+  const [cardParsedRows, setCardParsedRows] = useState<CardHistoryRow[] | null>(null);
+  const cardModalFileInputRef = useRef<HTMLInputElement>(null);
+  const [cardTableSaveBusy, setCardTableSaveBusy] = useState(false);
+  const [cardTableSaveMessage, setCardTableSaveMessage] = useState("");
+  const [cardTableSaveMessageType, setCardTableSaveMessageType] = useState<"ok" | "error" | "">("");
+  const [evidenceModalOpen, setEvidenceModalOpen] = useState(false);
+  const [evidenceModalPhase, setEvidenceModalPhase] = useState<"pick" | "reading" | "ready" | "saving" | "error">("pick");
+  const [evidenceModalProgress, setEvidenceModalProgress] = useState("");
+  const [evidenceModalType, setEvidenceModalType] = useState<EvidenceRow["evidenceType"]>("세금계산서");
+  const [evidenceParsedRows, setEvidenceParsedRows] = useState<EvidenceRow[] | null>(null);
+  const evidenceModalFileInputRef = useRef<HTMLInputElement>(null);
+  const [evidenceTableSaveBusy, setEvidenceTableSaveBusy] = useState(false);
+  const [evidenceTableSaveMessage, setEvidenceTableSaveMessage] = useState("");
+  const [evidenceTableSaveMessageType, setEvidenceTableSaveMessageType] = useState<"ok" | "error" | "">("");
+  const [evidenceSplitModalOpen, setEvidenceSplitModalOpen] = useState(false);
+  const [evidenceSplitRowId, setEvidenceSplitRowId] = useState<string | null>(null);
+  const [evidenceSplitTotal, setEvidenceSplitTotal] = useState("");
+  const [evidenceSplitBusy, setEvidenceSplitBusy] = useState(false);
+  const [monthCommonTab, setMonthCommonTab] = useState<"cards" | "evidence">("cards");
+  const [monthCommonCollapsed, setMonthCommonCollapsed] = useState(false);
   /** 상품 요약 업로드 모달 (매출 요약과 동일 단계) */
   const [productModalOpen, setProductModalOpen] = useState(false);
   const [productModalPhase, setProductModalPhase] = useState<"pick" | "reading" | "ready" | "saving" | "error">("pick");
   const [productModalProgress, setProductModalProgress] = useState("");
   const [productParsedRows, setProductParsedRows] = useState<ProductSummaryRow[] | null>(null);
   const productModalFileInputRef = useRef<HTMLInputElement>(null);
+  const [productTableSaveBusy, setProductTableSaveBusy] = useState(false);
+  const [productTableSaveMessage, setProductTableSaveMessage] = useState("");
+  const [productTableSaveMessageType, setProductTableSaveMessageType] = useState<"ok" | "error" | "">("");
   /** 비용 등록 업로드 모달 */
   const [costModalOpen, setCostModalOpen] = useState(false);
   const [costModalPhase, setCostModalPhase] = useState<"pick" | "reading" | "ready" | "saving" | "error">("pick");
@@ -773,10 +1084,35 @@ const App = () => {
     () => activeMonth?.stores.find((store) => store.id === activeStoreId) ?? null,
     [activeMonth, activeStoreId],
   );
+  const cardRowsForDisplay = useMemo(() => {
+    if (!activeMonth?.cardHistoryRows) return [];
+    return [...activeMonth.cardHistoryRows].sort((a, b) => {
+      const cardCmp = a.usedCard.localeCompare(b.usedCard, "ko");
+      if (cardCmp !== 0) return cardCmp;
+      return a.usedDate.localeCompare(b.usedDate, "ko");
+    });
+  }, [activeMonth?.cardHistoryRows]);
+  const evidenceRowsForDisplay = useMemo(() => {
+    if (!activeMonth?.evidenceRows) return [];
+    return [...activeMonth.evidenceRows];
+  }, [activeMonth?.evidenceRows]);
+  const evidenceSplitTarget = useMemo(
+    () => (activeMonth?.evidenceRows ?? []).find((r) => r.id === evidenceSplitRowId) ?? null,
+    [activeMonth?.evidenceRows, evidenceSplitRowId],
+  );
+  const evidenceSplitPreview = useMemo(() => {
+    if (!evidenceSplitTarget) return { totalAmount: 0, supplyAmount: 0, taxAmount: 0 };
+    return calcEvidenceSplit(evidenceSplitTarget.evidenceType, evidenceSplitTotal);
+  }, [evidenceSplitTarget, evidenceSplitTotal]);
+  const storeNameOptions = useMemo(() => {
+    const names = months.flatMap((m) => m.stores.map((s) => s.name.trim())).filter(Boolean);
+    return [...new Set(names)].sort((a, b) => a.localeCompare(b, "en"));
+  }, [months]);
   const salesRowsForDisplay = useMemo(
     () => sortSalesRows([...(activeStore?.salesSummaryRows ?? [])]),
     [activeStore?.salesSummaryRows],
   );
+  const productRowsForDisplay = useMemo(() => [...(activeStore?.productSummaryRows ?? [])], [activeStore?.productSummaryRows]);
   const costRowsForDisplay = useMemo(
     () => sortCostRows([...(activeStore?.costEntryRows ?? [])]),
     [activeStore?.costEntryRows],
@@ -808,6 +1144,22 @@ const App = () => {
       setSyncError(message);
       return { ok: false, message };
     }
+  };
+  const updateProductRowsLocal = (updater: (rows: ProductSummaryRow[]) => ProductSummaryRow[]) => {
+    if (!activeMonthId || !activeStoreId) return;
+    const next = monthsRef.current.map((month) => {
+      if (month.id !== activeMonthId) return month;
+      return {
+        ...month,
+        stores: month.stores.map((s) =>
+          s.id === activeStoreId
+            ? { ...s, productSummaryRows: updater([...(s.productSummaryRows ?? [])]) }
+            : s,
+        ),
+      };
+    });
+    monthsRef.current = next;
+    setMonths(next);
   };
 
   const persistCostRows = async (
@@ -968,6 +1320,65 @@ const App = () => {
     }
   };
 
+  const persistCardRows = async (
+    rows: CardHistoryRow[],
+  ): Promise<{ ok: true } | { ok: false; message: string }> => {
+    if (!activeMonthId) return { ok: false, message: "월이 선택되지 않았습니다." };
+    const next = monthsRef.current.map((month) =>
+      month.id === activeMonthId ? { ...month, cardHistoryRows: rows } : month,
+    );
+    monthsRef.current = next;
+    setMonths(next);
+    setSyncError("");
+    try {
+      await saveState(next);
+      return { ok: true };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown save error";
+      setSyncError(message);
+      return { ok: false, message };
+    }
+  };
+  const persistEvidenceRows = async (
+    rows: EvidenceRow[],
+  ): Promise<{ ok: true } | { ok: false; message: string }> => {
+    if (!activeMonthId) return { ok: false, message: "월이 선택되지 않았습니다." };
+    const next = monthsRef.current.map((month) =>
+      month.id === activeMonthId ? { ...month, evidenceRows: rows } : month,
+    );
+    monthsRef.current = next;
+    setMonths(next);
+    setSyncError("");
+    try {
+      await saveState(next);
+      return { ok: true };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown save error";
+      setSyncError(message);
+      return { ok: false, message };
+    }
+  };
+  const updateCardRowsLocal = (updater: (rows: CardHistoryRow[]) => CardHistoryRow[]) => {
+    if (!activeMonthId) return;
+    const next = monthsRef.current.map((month) => {
+      if (month.id !== activeMonthId) return month;
+      const currentRows = month.cardHistoryRows ?? [];
+      return { ...month, cardHistoryRows: updater(currentRows) };
+    });
+    monthsRef.current = next;
+    setMonths(next);
+  };
+  const updateEvidenceRowsLocal = (updater: (rows: EvidenceRow[]) => EvidenceRow[]) => {
+    if (!activeMonthId) return;
+    const next = monthsRef.current.map((month) => {
+      if (month.id !== activeMonthId) return month;
+      const currentRows = month.evidenceRows ?? [];
+      return { ...month, evidenceRows: updater(currentRows) };
+    });
+    monthsRef.current = next;
+    setMonths(next);
+  };
+
   const resetSalesModal = useCallback(() => {
     setSalesModalOpen(false);
     setSalesModalPhase("pick");
@@ -994,7 +1405,7 @@ const App = () => {
 
   const openProductUploadModal = () => {
     if (!activeMonthId || !activeStoreId || !activeStore) return;
-    if (productModalOpen || salesModalOpen || costModalOpen || salesEntryModalOpen) return;
+    if (productModalOpen || salesModalOpen || costModalOpen || salesEntryModalOpen || cardModalOpen) return;
     setProductModalOpen(true);
     setProductModalPhase("pick");
     setProductModalProgress("파일을 선택해 주세요.");
@@ -1074,9 +1485,34 @@ const App = () => {
     resetProductModal();
   };
 
+  const onProductRowDivisionChange = (rowId: string, division: ProductSummaryRow["division"]) => {
+    updateProductRowsLocal((rows) => rows.map((r) => (r.id === rowId ? { ...r, division } : r)));
+  };
+
+  const onProductTableSave = async () => {
+    if (!activeStore) return;
+    setProductTableSaveBusy(true);
+    setProductTableSaveMessage("");
+    setProductTableSaveMessageType("");
+    const result = await persistProductRows(activeStore.productSummaryRows ?? []);
+    setProductTableSaveBusy(false);
+    if (!result.ok) {
+      setProductTableSaveMessage(`저장 실패: ${result.message}`);
+      setProductTableSaveMessageType("error");
+      window.alert(result.message);
+      return;
+    }
+    setProductTableSaveMessage("저장 완료");
+    setProductTableSaveMessageType("ok");
+    window.setTimeout(() => {
+      setProductTableSaveMessage("");
+      setProductTableSaveMessageType("");
+    }, 2000);
+  };
+
   const openCostUploadModal = () => {
     if (!activeMonthId || !activeStoreId || !activeStore) return;
-    if (costModalOpen || salesModalOpen || productModalOpen || salesEntryModalOpen) return;
+    if (costModalOpen || salesModalOpen || productModalOpen || salesEntryModalOpen || cardModalOpen) return;
     setCostModalOpen(true);
     setCostModalPhase("pick");
     setCostModalProgress("파일을 선택해 주세요.");
@@ -1250,7 +1686,7 @@ const App = () => {
 
   const openSalesUploadModal = () => {
     if (!activeMonthId || !activeStoreId || !activeStore) return;
-    if (salesModalOpen || productModalOpen || costModalOpen || salesEntryModalOpen) return;
+    if (salesModalOpen || productModalOpen || costModalOpen || salesEntryModalOpen || cardModalOpen) return;
     setSalesModalOpen(true);
     setSalesModalPhase("pick");
     setSalesModalProgress("파일을 선택해 주세요.");
@@ -1450,10 +1886,297 @@ const App = () => {
     closeInventoryModal();
   };
 
+  const resetCardModal = useCallback(() => {
+    setCardModalOpen(false);
+    setCardModalPhase("pick");
+    setCardModalProgress("");
+    setCardParsedRows(null);
+    if (cardModalFileInputRef.current) cardModalFileInputRef.current.value = "";
+  }, []);
+
+  const openCardUploadModal = () => {
+    if (!activeMonthId || !activeMonth) return;
+    if (cardModalOpen || evidenceModalOpen) return;
+    setCardModalOpen(true);
+    setCardModalPhase("pick");
+    setCardModalProgress("파일을 선택해 주세요.");
+    setCardParsedRows(null);
+    if (cardModalFileInputRef.current) cardModalFileInputRef.current.value = "";
+  };
+
+  const closeCardModal = useCallback(() => {
+    if (cardModalPhase === "reading" || cardModalPhase === "saving") return;
+    if (cardModalPhase === "ready" && cardParsedRows !== null) {
+      if (!window.confirm("저장하지 않고 닫으시겠습니까?")) return;
+    }
+    resetCardModal();
+  }, [cardModalPhase, cardParsedRows, resetCardModal]);
+
+  useEffect(() => {
+    if (!cardModalOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      closeCardModal();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [cardModalOpen, closeCardModal]);
+
+  const onCardModalFileChange = async (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0] ?? null;
+    e.target.value = "";
+    if (!file || !activeMonth) return;
+
+    const ext = file.name.includes(".") ? file.name.split(".").pop()?.toLowerCase() : "";
+    if (!ext || !["xls", "xlsx", "csv"].includes(ext)) {
+      window.alert("xls, xlsx, csv 파일만 업로드할 수 있습니다.");
+      return;
+    }
+
+    setCardModalPhase("reading");
+    setCardModalProgress("파일을 읽는 중…");
+    try {
+      await new Promise((r) => requestAnimationFrame(() => r(undefined)));
+      setCardModalProgress("시트에서 행을 불러오는 중…");
+      const rows = await parseCardFile(file);
+      setCardModalProgress("이용일자·이용카드·이용가맹점 등 컬럼을 확인하는 중…");
+      await new Promise((r) => setTimeout(r, 200));
+      setCardParsedRows(rows);
+      setCardModalPhase("ready");
+      setCardModalProgress(
+        rows.length === 0
+          ? "분석 결과 행이 없습니다. 저장하면 기존 카드 내역이 비워질 수 있습니다."
+          : `${rows.length}건을 불러왔습니다. 저장을 누르면 서버에 반영됩니다.`,
+      );
+    } catch (err) {
+      setCardModalPhase("error");
+      setCardModalProgress(err instanceof Error ? err.message : "파일 분석에 실패했습니다.");
+    }
+  };
+
+  const onCardModalSave = async () => {
+    if (!cardParsedRows || !activeMonthId) return;
+    setCardModalPhase("saving");
+    setCardModalProgress("추출한 컬럼으로 월 공통 데이터를 정리하는 중…");
+    await new Promise((r) => setTimeout(r, 180));
+    setCardModalProgress("데이터베이스에 저장하는 중…");
+    const merged = mergeAndSortCardRows(activeMonth?.cardHistoryRows ?? [], cardParsedRows);
+    const result = await persistCardRows(merged);
+    if (!result.ok) {
+      setCardModalPhase("ready");
+      setCardModalProgress(`저장에 실패했습니다: ${result.message} (저장을 다시 눌러 재시도할 수 있습니다.)`);
+      return;
+    }
+    setCardModalProgress("모든 작업이 완료되었습니다.");
+    await new Promise((r) => setTimeout(r, 450));
+    resetCardModal();
+  };
+
+  const onCardRowFieldChange = (
+    rowId: string,
+    patch: Pick<CardHistoryRow, "expenseAccount" | "appliedStore">,
+  ) => {
+    updateCardRowsLocal((rows) => rows.map((r) => (r.id === rowId ? { ...r, ...patch } : r)));
+  };
+
+  const onCardTableSave = async () => {
+    if (!activeMonth) return;
+    setCardTableSaveBusy(true);
+    setCardTableSaveMessage("");
+    setCardTableSaveMessageType("");
+    const result = await persistCardRows(activeMonth.cardHistoryRows ?? []);
+    setCardTableSaveBusy(false);
+    if (!result.ok) {
+      setCardTableSaveMessage(`저장 실패: ${result.message}`);
+      setCardTableSaveMessageType("error");
+      window.alert(result.message);
+      return;
+    }
+    setCardTableSaveMessage("저장 완료");
+    setCardTableSaveMessageType("ok");
+    window.setTimeout(() => {
+      setCardTableSaveMessage("");
+      setCardTableSaveMessageType("");
+    }, 2000);
+  };
+  const resetEvidenceModal = useCallback(() => {
+    setEvidenceModalOpen(false);
+    setEvidenceModalPhase("pick");
+    setEvidenceModalProgress("");
+    setEvidenceParsedRows(null);
+    if (evidenceModalFileInputRef.current) evidenceModalFileInputRef.current.value = "";
+  }, []);
+
+  const openEvidenceUploadModal = (type: EvidenceRow["evidenceType"]) => {
+    if (!activeMonthId || !activeMonth) return;
+    if (evidenceModalOpen) return;
+    setEvidenceModalType(type);
+    setEvidenceModalOpen(true);
+    setEvidenceModalPhase("pick");
+    setEvidenceModalProgress("파일을 선택해 주세요.");
+    setEvidenceParsedRows(null);
+    if (evidenceModalFileInputRef.current) evidenceModalFileInputRef.current.value = "";
+  };
+
+  const closeEvidenceModal = useCallback(() => {
+    if (evidenceModalPhase === "reading" || evidenceModalPhase === "saving") return;
+    if (evidenceModalPhase === "ready" && evidenceParsedRows !== null) {
+      if (!window.confirm("저장하지 않고 닫으시겠습니까?")) return;
+    }
+    resetEvidenceModal();
+  }, [evidenceModalPhase, evidenceParsedRows, resetEvidenceModal]);
+
+  useEffect(() => {
+    if (!evidenceModalOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      closeEvidenceModal();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [evidenceModalOpen, closeEvidenceModal]);
+
+  const onEvidenceModalFileChange = async (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0] ?? null;
+    e.target.value = "";
+    if (!file || !activeMonth) return;
+    const ext = file.name.includes(".") ? file.name.split(".").pop()?.toLowerCase() : "";
+    if (!ext || !["xls", "xlsx", "csv"].includes(ext)) {
+      window.alert("xls, xlsx, csv 파일만 업로드할 수 있습니다.");
+      return;
+    }
+
+    setEvidenceModalPhase("reading");
+    setEvidenceModalProgress("파일을 읽는 중…");
+    try {
+      await new Promise((r) => requestAnimationFrame(() => r(undefined)));
+      setEvidenceModalProgress("시트에서 행을 불러오는 중…");
+      const rows = await parseEvidenceFile(file, evidenceModalType);
+      setEvidenceModalProgress("컬럼을 확인하는 중…");
+      await new Promise((r) => setTimeout(r, 200));
+      setEvidenceParsedRows(rows);
+      setEvidenceModalPhase("ready");
+      setEvidenceModalProgress(
+        rows.length === 0
+          ? "분석 결과 행이 없습니다. 저장하면 변화가 없을 수 있습니다."
+          : `${rows.length}건을 불러왔습니다. 저장을 누르면 서버에 반영됩니다.`,
+      );
+    } catch (err) {
+      setEvidenceModalPhase("error");
+      setEvidenceModalProgress(err instanceof Error ? err.message : "파일 분석에 실패했습니다.");
+    }
+  };
+
+  const onEvidenceModalSave = async () => {
+    if (!evidenceParsedRows || !activeMonthId || !activeMonth) return;
+    setEvidenceModalPhase("saving");
+    setEvidenceModalProgress("추출한 컬럼으로 증빙 데이터를 정리하는 중…");
+    await new Promise((r) => setTimeout(r, 180));
+    setEvidenceModalProgress("데이터베이스에 저장하는 중…");
+    const merged = mergeAndSortEvidenceRows(activeMonth.evidenceRows ?? [], evidenceParsedRows);
+    const result = await persistEvidenceRows(merged);
+    if (!result.ok) {
+      setEvidenceModalPhase("ready");
+      setEvidenceModalProgress(`저장에 실패했습니다: ${result.message} (저장을 다시 눌러 재시도할 수 있습니다.)`);
+      return;
+    }
+    setEvidenceModalProgress("모든 작업이 완료되었습니다.");
+    await new Promise((r) => setTimeout(r, 450));
+    resetEvidenceModal();
+  };
+
+  const onEvidenceRowAppliedStoreChange = (rowId: string, appliedStore: string) => {
+    updateEvidenceRowsLocal((rows) => rows.map((r) => (r.id === rowId ? { ...r, appliedStore } : r)));
+  };
+
+  const onEvidenceTableSave = async () => {
+    if (!activeMonth) return;
+    setEvidenceTableSaveBusy(true);
+    setEvidenceTableSaveMessage("");
+    setEvidenceTableSaveMessageType("");
+    const result = await persistEvidenceRows(activeMonth.evidenceRows ?? []);
+    setEvidenceTableSaveBusy(false);
+    if (!result.ok) {
+      setEvidenceTableSaveMessage(`저장 실패: ${result.message}`);
+      setEvidenceTableSaveMessageType("error");
+      window.alert(result.message);
+      return;
+    }
+    setEvidenceTableSaveMessage("저장 완료");
+    setEvidenceTableSaveMessageType("ok");
+    window.setTimeout(() => {
+      setEvidenceTableSaveMessage("");
+      setEvidenceTableSaveMessageType("");
+    }, 2000);
+  };
+
+  const openEvidenceSplitModal = (row: EvidenceRow) => {
+    setEvidenceSplitRowId(row.id);
+    setEvidenceSplitTotal("");
+    setEvidenceSplitModalOpen(true);
+  };
+
+  const closeEvidenceSplitModal = () => {
+    if (evidenceSplitBusy) return;
+    setEvidenceSplitModalOpen(false);
+    setEvidenceSplitRowId(null);
+    setEvidenceSplitTotal("");
+  };
+
+  const onEvidenceSplitSave = () => {
+    if (!evidenceSplitTarget) return;
+    setEvidenceSplitBusy(true);
+    const split = calcEvidenceSplit(evidenceSplitTarget.evidenceType, evidenceSplitTotal);
+    if (split.totalAmount <= 0) {
+      setEvidenceSplitBusy(false);
+      window.alert("분리 합계금액을 입력해 주세요.");
+      return;
+    }
+    if (split.totalAmount > Math.round(evidenceSplitTarget.totalAmount)) {
+      setEvidenceSplitBusy(false);
+      window.alert("분리 합계금액이 원래 합계금액보다 클 수 없습니다.");
+      return;
+    }
+    if (
+      split.supplyAmount > Math.round(evidenceSplitTarget.supplyAmount) ||
+      split.taxAmount > Math.round(evidenceSplitTarget.taxAmount)
+    ) {
+      setEvidenceSplitBusy(false);
+      window.alert("분리 금액이 원래 row 금액보다 클 수 없습니다.");
+      return;
+    }
+
+    updateEvidenceRowsLocal((rows) => {
+      const idx = rows.findIndex((r) => r.id === evidenceSplitTarget.id);
+      if (idx < 0) return rows;
+      const original = rows[idx]!;
+      const updatedOriginal: EvidenceRow = {
+        ...original,
+        totalAmount: Math.round(original.totalAmount) - split.totalAmount,
+        supplyAmount: Math.round(original.supplyAmount) - split.supplyAmount,
+        taxAmount: Math.round(original.taxAmount) - split.taxAmount,
+      };
+      const splitRow: EvidenceRow = {
+        ...original,
+        id: nowId(),
+        totalAmount: split.totalAmount,
+        supplyAmount: split.supplyAmount,
+        taxAmount: split.taxAmount,
+        appliedStore: "",
+      };
+      return [...rows.slice(0, idx), updatedOriginal, splitRow, ...rows.slice(idx + 1)];
+    });
+    setEvidenceSplitBusy(false);
+    closeEvidenceSplitModal();
+  };
+
   const salesTabLoading = salesModalOpen && (salesModalPhase === "reading" || salesModalPhase === "saving");
   const productTabLoading =
     productModalOpen && (productModalPhase === "reading" || productModalPhase === "saving");
   const costTabLoading = costModalOpen && (costModalPhase === "reading" || costModalPhase === "saving");
+  const cardTabLoading = cardModalOpen && (cardModalPhase === "reading" || cardModalPhase === "saving");
+  const evidenceTabLoading =
+    evidenceModalOpen && (evidenceModalPhase === "reading" || evidenceModalPhase === "saving");
 
   return (
     <main className="layout">
@@ -1584,7 +2307,267 @@ const App = () => {
                 {"\u00A0\u00A0"}
               </span>
               <p className="muted card-meta">{activeMonth.label}</p>
+              <span className="sales-heading-grow" />
+              <button
+                type="button"
+                className="btn-secondary month-collapse-toggle"
+                aria-label={monthCommonCollapsed ? "월 공통 데이터 열기" : "월 공통 데이터 접기"}
+                onClick={() => setMonthCommonCollapsed((v) => !v)}
+              >
+                {monthCommonCollapsed ? "▸" : "▾"}
+              </button>
             </div>
+            {!monthCommonCollapsed && <div className="store-data-shell tab-panel-with-loader">
+              <div className="store-data-tabbed">
+                <br />
+                <div className="tab-bar" role="tablist" aria-label="월 공통 데이터 구분">
+                  <button
+                    type="button"
+                    id="month-tab-cards"
+                    role="tab"
+                    aria-selected={monthCommonTab === "cards"}
+                    aria-controls="month-panel-cards"
+                    className={`tab-trigger${monthCommonTab === "cards" ? " tab-trigger-active" : ""}`}
+                    onClick={() => setMonthCommonTab("cards")}
+                  >
+                    카드 내역
+                  </button>
+                  <button
+                    type="button"
+                    id="month-tab-evidence"
+                    role="tab"
+                    aria-selected={monthCommonTab === "evidence"}
+                    aria-controls="month-panel-evidence"
+                    className={`tab-trigger${monthCommonTab === "evidence" ? " tab-trigger-active" : ""}`}
+                    onClick={() => setMonthCommonTab("evidence")}
+                  >
+                    증빙 내역
+                  </button>
+                </div>
+                <div
+                  id="month-panel-cards"
+                  role="tabpanel"
+                  aria-labelledby="month-tab-cards"
+                  hidden={monthCommonTab !== "cards"}
+                  className="tab-panel tab-panel-with-loader"
+                >
+                  <div className="sales-block">
+                    <br />
+                    <div className="sales-heading">
+                      <h3>카드 내역 데이터</h3>
+                      <span className="panel-heading-spacer" aria-hidden={true}>
+                        {"\u00A0\u00A0"}
+                      </span>
+                      <button type="button" disabled={cardModalOpen || evidenceModalOpen} onClick={openCardUploadModal}>
+                        upload
+                      </button>
+                      <span aria-hidden={true}>{"\u00A0\u00A0"}</span>
+                      {cardRowsForDisplay.length > 0 && (
+                        <span className="sales-sum-inline">
+                          공급가액sum:{" "}
+                          {money.format(
+                            Math.round(cardRowsForDisplay.reduce((acc, row) => acc + row.approvalAmount, 0) / 1.1),
+                          )}
+                        </span>
+                      )}
+                    </div>
+                    {(cardRowsForDisplay.length ?? 0) > 0 && (
+                      <table className="data-table">
+                        <thead>
+                          <tr>
+                            <th>이용일자</th>
+                            <th>승인번호</th>
+                            <th>이용카드</th>
+                            <th>이용가맹점</th>
+                            <th>매출구분</th>
+                            <th>승인금액(취소)</th>
+                            <th>결제금액(해외건)</th>
+                            <th>비용 계정</th>
+                            <th>적용 매장</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {cardRowsForDisplay.map((row) => (
+                            <tr key={row.id}>
+                              <td>{row.usedDate}</td>
+                              <td>{row.approvalNumber}</td>
+                              <td>{row.usedCard}</td>
+                              <td>{row.merchant}</td>
+                              <td>{row.salesType}</td>
+                              <td>{money.format(Math.round(row.approvalAmount))}</td>
+                              <td>{money.format(Math.round(row.paymentAmount))}</td>
+                              <td>
+                                <select
+                                  className={`card-table-select${!(row.expenseAccount ?? "").trim() ? " card-table-select-missing" : ""}`}
+                                  value={row.expenseAccount ?? ""}
+                                  onChange={(e) =>
+                                    onCardRowFieldChange(row.id, { expenseAccount: e.target.value })
+                                  }
+                                >
+                                  <option value="">선택</option>
+                                  {COST_ACCOUNT_OPTIONS.map((opt) => (
+                                    <option key={opt} value={opt}>
+                                      {opt}
+                                    </option>
+                                  ))}
+                                </select>
+                              </td>
+                              <td>
+                                <select
+                                  className={`card-table-select${!(row.appliedStore ?? "").trim() ? " card-table-select-missing" : ""}`}
+                                  value={row.appliedStore ?? ""}
+                                  onChange={(e) => onCardRowFieldChange(row.id, { appliedStore: e.target.value })}
+                                >
+                                  <option value="">선택</option>
+                                  {storeNameOptions.map((name) => (
+                                    <option key={name} value={name}>
+                                      {name}
+                                    </option>
+                                  ))}
+                                </select>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    )}
+                    {cardRowsForDisplay.length > 0 && (
+                      <div className="save-row">
+                        <button
+                          type="button"
+                          className="btn-save"
+                          disabled={cardTableSaveBusy}
+                          onClick={() => void onCardTableSave()}
+                        >
+                          {cardTableSaveBusy ? "저장 중..." : "저장"}
+                        </button>
+                        {cardTableSaveMessage && (
+                          <span className={cardTableSaveMessageType === "error" ? "error" : "muted"}>
+                            {cardTableSaveMessage}
+                          </span>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                  {cardTabLoading && (
+                    <div className="tab-loading-overlay" role="status" aria-live="polite">
+                      <span className="tab-loading-spinner" />
+                    </div>
+                  )}
+                </div>
+                <div
+                  id="month-panel-evidence"
+                  role="tabpanel"
+                  aria-labelledby="month-tab-evidence"
+                  hidden={monthCommonTab !== "evidence"}
+                  className="tab-panel tab-panel-with-loader"
+                >
+                  <div className="sales-block">
+                    <br />
+                    <div className="sales-heading">
+                      <h3>증빙 내역 데이터</h3>
+                      <span className="panel-heading-spacer" aria-hidden={true}>
+                        {"\u00A0\u00A0"}
+                      </span>
+                      <button
+                        type="button"
+                        disabled={evidenceModalOpen || cardModalOpen}
+                        onClick={() => openEvidenceUploadModal("세금계산서")}
+                      >
+                        세금계산서
+                      </button>
+                      <span aria-hidden={true}>{"\u00A0\u00A0"}</span>
+                      <button
+                        type="button"
+                        disabled={evidenceModalOpen || cardModalOpen}
+                        onClick={() => openEvidenceUploadModal("계산서")}
+                      >
+                        계산서
+                      </button>
+                      <span aria-hidden={true}>{"\u00A0\u00A0"}</span>
+                      <button
+                        type="button"
+                        disabled={evidenceModalOpen || cardModalOpen}
+                        onClick={() => openEvidenceUploadModal("기타증빙")}
+                      >
+                        기타증빙
+                      </button>
+                    </div>
+                    {(evidenceRowsForDisplay.length ?? 0) > 0 && (
+                      <>
+                        <table className="data-table">
+                          <thead>
+                            <tr>
+                              <th>날짜</th>
+                              <th>승인번호</th>
+                              <th>업체명</th>
+                              <th>합계금액</th>
+                              <th>공급가액</th>
+                              <th>세액</th>
+                              <th>증빙구분</th>
+                              <th>적용매장</th>
+                              <th>분리</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {evidenceRowsForDisplay.map((row) => (
+                              <tr key={row.id}>
+                                <td>{row.date}</td>
+                                <td>{row.approvalNumber}</td>
+                                <td>{row.vendorName}</td>
+                                <td>{money.format(Math.round(row.totalAmount))}</td>
+                                <td>{money.format(Math.round(row.supplyAmount))}</td>
+                                <td>{money.format(Math.round(row.taxAmount))}</td>
+                                <td>{row.evidenceType}</td>
+                                <td>
+                                  <select
+                                    className={`card-table-select${!(row.appliedStore ?? "").trim() ? " card-table-select-missing" : ""}`}
+                                    value={row.appliedStore ?? ""}
+                                    onChange={(e) => onEvidenceRowAppliedStoreChange(row.id, e.target.value)}
+                                  >
+                                    <option value="">선택</option>
+                                    {storeNameOptions.map((name) => (
+                                      <option key={name} value={name}>
+                                        {name}
+                                      </option>
+                                    ))}
+                                  </select>
+                                </td>
+                                <td>
+                                  <button type="button" className="btn-secondary btn-xs" onClick={() => openEvidenceSplitModal(row)}>
+                                    분리
+                                  </button>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                        <div className="save-row">
+                          <button
+                            type="button"
+                            className="btn-save"
+                            disabled={evidenceTableSaveBusy}
+                            onClick={() => void onEvidenceTableSave()}
+                          >
+                            {evidenceTableSaveBusy ? "저장 중..." : "저장"}
+                          </button>
+                          {evidenceTableSaveMessage && (
+                            <span className={evidenceTableSaveMessageType === "error" ? "error" : "muted"}>
+                              {evidenceTableSaveMessage}
+                            </span>
+                          )}
+                        </div>
+                      </>
+                    )}
+                  </div>
+                  {evidenceTabLoading && (
+                    <div className="tab-loading-overlay" role="status" aria-live="polite">
+                      <span className="tab-loading-spinner" />
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>}
           </section>
 
           <section className="panel">
@@ -1815,28 +2798,63 @@ const App = () => {
                   ) : (
                     <>
                       {(activeStore.productSummaryRows?.length ?? 0) > 0 && (
-                        <table className="data-table">
-                          <thead>
-                            <tr>
-                              <th>카테고리</th>
-                              <th>수량</th>
-                              <th>총매출</th>
-                              <th>실매출</th>
-                              <th>할인</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {activeStore.productSummaryRows!.map((row) => (
-                              <tr key={row.id}>
-                                <td>{row.category}</td>
-                                <td>{row.quantity.toLocaleString("ko-KR")}</td>
-                                <td>{money.format(row.totalSales)}</td>
-                                <td>{money.format(row.actualSales)}</td>
-                                <td>{money.format(row.discount)}</td>
+                        <>
+                          <table className="data-table data-table-products">
+                            <thead>
+                              <tr>
+                                <th>카테고리</th>
+                                <th>수량</th>
+                                <th>총매출</th>
+                                <th>실매출</th>
+                                <th>할인</th>
+                                <th>구분</th>
                               </tr>
-                            ))}
-                          </tbody>
-                        </table>
+                            </thead>
+                            <tbody>
+                              {productRowsForDisplay.map((row) => (
+                                <tr key={row.id}>
+                                  <td>{row.category}</td>
+                                  <td>{row.quantity.toLocaleString("ko-KR")}</td>
+                                  <td>{money.format(row.totalSales)}</td>
+                                  <td>{money.format(row.actualSales)}</td>
+                                  <td>{money.format(row.discount)}</td>
+                                  <td>
+                                    <select
+                                      className={`card-table-select${!(row.division ?? "").trim() ? " card-table-select-missing" : ""}`}
+                                      value={row.division ?? ""}
+                                      onChange={(e) =>
+                                        onProductRowDivisionChange(
+                                          row.id,
+                                          e.target.value as ProductSummaryRow["division"],
+                                        )
+                                      }
+                                    >
+                                      <option value="">선택</option>
+                                      <option value="메뉴">메뉴</option>
+                                      <option value="음료주류">음료주류</option>
+                                      <option value="기타">기타</option>
+                                    </select>
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                          <div className="save-row">
+                            <button
+                              type="button"
+                              className="btn-save"
+                              disabled={productTableSaveBusy}
+                              onClick={() => void onProductTableSave()}
+                            >
+                              {productTableSaveBusy ? "저장 중..." : "저장"}
+                            </button>
+                            {productTableSaveMessage && (
+                              <span className={productTableSaveMessageType === "error" ? "error" : "muted"}>
+                                {productTableSaveMessage}
+                              </span>
+                            )}
+                          </div>
+                        </>
                       )}
                     </>
                   )}
@@ -1886,7 +2904,7 @@ const App = () => {
                         <button
                           type="button"
                           className="btn-secondary"
-                          disabled={salesModalOpen || productModalOpen || costModalOpen || costEntryBusy}
+                          disabled={salesModalOpen || productModalOpen || costModalOpen || cardModalOpen || costEntryBusy}
                           onClick={openCreateCostEntryModal}
                         >
                           단건 등록
@@ -1960,6 +2978,217 @@ const App = () => {
             </div>
           </section>
         </>
+      )}
+
+      {evidenceModalOpen && activeMonth && (
+        <div
+          className="modal-backdrop"
+          role="presentation"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) closeEvidenceModal();
+          }}
+        >
+          <div
+            className="modal-panel"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="evidence-modal-title"
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <div className="modal-header">
+              <h3 id="evidence-modal-title">{evidenceModalType} 업로드</h3>
+              <button
+                type="button"
+                className="modal-close"
+                aria-label="닫기"
+                disabled={evidenceModalPhase === "reading" || evidenceModalPhase === "saving"}
+                onClick={closeEvidenceModal}
+              >
+                ×
+              </button>
+            </div>
+            <p className="modal-progress" role="status" aria-live="polite">
+              {evidenceModalProgress}
+            </p>
+            {(evidenceModalPhase === "pick" || evidenceModalPhase === "error") && (
+              <div className="modal-actions">
+                <button type="button" onClick={() => evidenceModalFileInputRef.current?.click()}>
+                  파일 선택
+                </button>
+                <button type="button" className="btn-secondary" onClick={closeEvidenceModal}>
+                  취소
+                </button>
+              </div>
+            )}
+            {evidenceModalPhase === "reading" && (
+              <div className="modal-progress-bar" aria-hidden={true}>
+                <span className="modal-progress-bar-fill modal-progress-bar-indeterminate" />
+              </div>
+            )}
+            {evidenceModalPhase === "ready" && (
+              <div className="modal-actions">
+                <button type="button" className="btn-save" onClick={() => void onEvidenceModalSave()}>
+                  저장
+                </button>
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  onClick={() => {
+                    setEvidenceModalPhase("pick");
+                    setEvidenceParsedRows(null);
+                    setEvidenceModalProgress("파일을 선택해 주세요.");
+                  }}
+                >
+                  다른 파일
+                </button>
+              </div>
+            )}
+            {evidenceModalPhase === "saving" && (
+              <div className="modal-progress-bar" aria-hidden={true}>
+                <span className="modal-progress-bar-fill modal-progress-bar-indeterminate" />
+              </div>
+            )}
+            {evidenceModalPhase === "error" && (
+              <p className="error modal-error">파일을 다시 선택하거나 취소할 수 있습니다.</p>
+            )}
+            <input
+              ref={evidenceModalFileInputRef}
+              type="file"
+              accept=".xls,.xlsx,.csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv"
+              className="visually-hidden"
+              onChange={(e) => void onEvidenceModalFileChange(e)}
+            />
+          </div>
+        </div>
+      )}
+
+      {evidenceSplitModalOpen && evidenceSplitTarget && (
+        <div
+          className="modal-backdrop"
+          role="presentation"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) closeEvidenceSplitModal();
+          }}
+        >
+          <div
+            className="modal-panel"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="evidence-split-modal-title"
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <div className="modal-header">
+              <h3 id="evidence-split-modal-title">증빙 분리</h3>
+              <button type="button" className="modal-close" aria-label="닫기" onClick={closeEvidenceSplitModal}>
+                ×
+              </button>
+            </div>
+            <div className="cost-form-grid evidence-split-grid">
+              <label className="cost-form-full">
+                합계금액
+                <input value={evidenceSplitTotal} onChange={(e) => setEvidenceSplitTotal(e.target.value)} />
+              </label>
+              <label>
+                공급가액
+                <input value={String(evidenceSplitPreview.supplyAmount)} disabled />
+              </label>
+              <label>
+                세액
+                <input value={String(evidenceSplitPreview.taxAmount)} disabled />
+              </label>
+            </div>
+            <div className="modal-actions">
+              <button type="button" className="btn-save" disabled={evidenceSplitBusy} onClick={() => void onEvidenceSplitSave()}>
+                저장
+              </button>
+              <button type="button" className="btn-secondary" disabled={evidenceSplitBusy} onClick={closeEvidenceSplitModal}>
+                취소
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {cardModalOpen && activeMonth && (
+        <div
+          className="modal-backdrop"
+          role="presentation"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) closeCardModal();
+          }}
+        >
+          <div
+            className="modal-panel"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="card-modal-title"
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <div className="modal-header">
+              <h3 id="card-modal-title">카드 내역 업로드</h3>
+              <button
+                type="button"
+                className="modal-close"
+                aria-label="닫기"
+                disabled={cardModalPhase === "reading" || cardModalPhase === "saving"}
+                onClick={closeCardModal}
+              >
+                ×
+              </button>
+            </div>
+            <p className="modal-progress" role="status" aria-live="polite">
+              {cardModalProgress}
+            </p>
+            {(cardModalPhase === "pick" || cardModalPhase === "error") && (
+              <div className="modal-actions">
+                <button type="button" onClick={() => cardModalFileInputRef.current?.click()}>
+                  파일 선택
+                </button>
+                <button type="button" className="btn-secondary" onClick={closeCardModal}>
+                  취소
+                </button>
+              </div>
+            )}
+            {cardModalPhase === "reading" && (
+              <div className="modal-progress-bar" aria-hidden={true}>
+                <span className="modal-progress-bar-fill modal-progress-bar-indeterminate" />
+              </div>
+            )}
+            {cardModalPhase === "ready" && (
+              <div className="modal-actions">
+                <button type="button" className="btn-save" onClick={() => void onCardModalSave()}>
+                  저장
+                </button>
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  onClick={() => {
+                    setCardModalPhase("pick");
+                    setCardParsedRows(null);
+                    setCardModalProgress("파일을 선택해 주세요.");
+                  }}
+                >
+                  다른 파일
+                </button>
+              </div>
+            )}
+            {cardModalPhase === "saving" && (
+              <div className="modal-progress-bar" aria-hidden={true}>
+                <span className="modal-progress-bar-fill modal-progress-bar-indeterminate" />
+              </div>
+            )}
+            {cardModalPhase === "error" && (
+              <p className="error modal-error">파일을 다시 선택하거나 취소할 수 있습니다.</p>
+            )}
+            <input
+              ref={cardModalFileInputRef}
+              type="file"
+              accept=".xls,.xlsx,.csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv"
+              className="visually-hidden"
+              onChange={(e) => void onCardModalFileChange(e)}
+            />
+          </div>
+        </div>
       )}
 
       {salesEntryModalOpen && activeStore && (

@@ -313,6 +313,33 @@ button {
   width: 7.777%;
 }
 
+.data-table-products {
+  table-layout: fixed;
+}
+
+.data-table-products th,
+.data-table-products td {
+  width: 16.666%;
+}
+
+.card-table-select {
+  width: 100%;
+  min-width: 120px;
+}
+
+.card-table-select-missing {
+  border-color: #dc2626;
+  background: #fef2f2;
+}
+
+#month-panel-cards .data-table {
+  font-size: 10.4px;
+}
+
+#month-panel-evidence .data-table {
+  font-size: 10.4px;
+}
+
 .modal-backdrop {
   position: fixed;
   inset: 0;
@@ -400,6 +427,18 @@ button {
   background: #f9fafb;
 }
 
+.month-collapse-toggle {
+  min-width: 34px;
+  padding: 4px 8px;
+  line-height: 1;
+  font-size: 14px;
+}
+
+.btn-xs {
+  padding: 4px 8px;
+  font-size: 12px;
+}
+
 .modal-error {
   margin-top: 8px;
   font-size: 13px;
@@ -442,6 +481,10 @@ button {
 
 .cost-form-full {
   grid-column: 1 / -1;
+}
+
+.evidence-split-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .cost-date-link {
