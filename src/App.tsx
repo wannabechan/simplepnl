@@ -21,11 +21,26 @@ interface ProductSummaryRow {
   discount: number;
 }
 
+/** 비용 등록: 첫 행 헤더, 2행부터 데이터 (9컬럼) */
+interface CostEntryRow {
+  id: string;
+  paymentDate: string;
+  expenseKind: string;
+  vendorName: string;
+  totalAmount: number;
+  supplyAmount: number;
+  vat: number;
+  taxMode: string;
+  payStatus: string;
+  memo: string;
+}
+
 interface StoreRecord {
   id: string;
   name: string;
   salesSummaryRows?: SalesSummaryRow[];
   productSummaryRows?: ProductSummaryRow[];
+  costEntryRows?: CostEntryRow[];
 }
 
 interface MonthRecord {
@@ -216,6 +231,71 @@ const parseProductFile = async (file: File): Promise<ProductSummaryRow[]> => {
     });
 };
 
+/** 비용 파일: 1행이 헤더, 2행부터 본문 */
+const parseCostFile = async (file: File): Promise<CostEntryRow[]> => {
+  const buffer = await file.arrayBuffer();
+  const workbook = XLSX.read(buffer, { type: "array" });
+  const firstSheet = workbook.SheetNames[0];
+  if (!firstSheet) return [];
+  const sheet = workbook.Sheets[firstSheet];
+  const matrix = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, defval: "", raw: false });
+  if (!matrix.length) return [];
+  const headerRowIdx = 0;
+  const rows = matrixRowsToObjects(matrix, headerRowIdx);
+
+  return rows
+    .map((row) => {
+      const paymentDate = formatBusinessDay(findCell(row, ["결제일", "일자", "날짜"]));
+      const expenseKind = String(
+        findCell(row, ["비용 종류", "비용종류", "비용 종류 콤보박스", "비용종류콤보박스"]) ?? "",
+      ).trim();
+      const vendorName = String(findCell(row, ["업체명", "업체 명", "거래처"]) ?? "").trim();
+      const totalAmount = toNumber(findCell(row, ["합계금액", "합계 금액"]));
+      const supplyAmount = toNumber(findCell(row, ["공급가액"]));
+      const vat = toNumber(findCell(row, ["부가세"]));
+      const taxMode = String(
+        findCell(row, [
+          "과세/면세",
+          "과세면세",
+          "과세 부과세",
+          "과세/부과세",
+          "과세부과세",
+          "과세/부과세 콤보박스",
+        ]) ?? "",
+      ).trim();
+      const payStatus = String(
+        findCell(row, ["결제/미결제", "결제미결제", "결제 여부", "지급여부", "결제/미결제 콤보박스"]) ?? "",
+      ).trim();
+      const memo = String(findCell(row, ["메모", "비고"]) ?? "").trim();
+
+      return {
+        id: nowId(),
+        paymentDate,
+        expenseKind,
+        vendorName,
+        totalAmount,
+        supplyAmount,
+        vat,
+        taxMode,
+        payStatus,
+        memo,
+      };
+    })
+    .filter((r) => {
+      return (
+        r.paymentDate !== "" ||
+        r.expenseKind !== "" ||
+        r.vendorName !== "" ||
+        r.totalAmount !== 0 ||
+        r.supplyAmount !== 0 ||
+        r.vat !== 0 ||
+        r.taxMode !== "" ||
+        r.payStatus !== "" ||
+        r.memo !== ""
+      );
+    });
+};
+
 const normalizeSalesRow = (raw: Partial<SalesSummaryRow>): SalesSummaryRow => ({
   id: typeof raw.id === "string" ? raw.id : nowId(),
   businessDay: typeof raw.businessDay === "string" ? raw.businessDay : String(raw.businessDay ?? ""),
@@ -236,6 +316,21 @@ const normalizeProductRow = (raw: Partial<ProductSummaryRow>): ProductSummaryRow
   discount: toNumber(raw.discount),
 });
 
+const normalizeCostEntryRow = (raw: Partial<CostEntryRow>): CostEntryRow => ({
+  id: typeof raw.id === "string" ? raw.id : nowId(),
+  paymentDate:
+    typeof raw.paymentDate === "string" ? raw.paymentDate : String(raw.paymentDate ?? ""),
+  expenseKind:
+    typeof raw.expenseKind === "string" ? raw.expenseKind : String(raw.expenseKind ?? ""),
+  vendorName: typeof raw.vendorName === "string" ? raw.vendorName : String(raw.vendorName ?? ""),
+  totalAmount: toNumber(raw.totalAmount),
+  supplyAmount: toNumber(raw.supplyAmount),
+  vat: toNumber(raw.vat),
+  taxMode: typeof raw.taxMode === "string" ? raw.taxMode : String(raw.taxMode ?? ""),
+  payStatus: typeof raw.payStatus === "string" ? raw.payStatus : String(raw.payStatus ?? ""),
+  memo: typeof raw.memo === "string" ? raw.memo : String(raw.memo ?? ""),
+});
+
 const normalizeStore = (raw: unknown): StoreRecord => {
   const s = raw as Record<string, unknown>;
   let salesSummaryRows: SalesSummaryRow[] | undefined;
@@ -246,11 +341,16 @@ const normalizeStore = (raw: unknown): StoreRecord => {
   if (Array.isArray(s.productSummaryRows)) {
     productSummaryRows = (s.productSummaryRows as Partial<ProductSummaryRow>[]).map(normalizeProductRow);
   }
+  let costEntryRows: CostEntryRow[] | undefined;
+  if (Array.isArray(s.costEntryRows)) {
+    costEntryRows = (s.costEntryRows as Partial<CostEntryRow>[]).map(normalizeCostEntryRow);
+  }
   return {
     id: typeof s.id === "string" ? s.id : nowId(),
     name: typeof s.name === "string" ? s.name : "",
     salesSummaryRows,
     productSummaryRows,
+    costEntryRows,
   };
 };
 
@@ -290,17 +390,19 @@ const saveState = async (months: MonthRecord[]) => {
   }
 };
 
-/** 월·매장 id·label·이름·목록만 로컬 기준으로 두고, 매출·상품 요약 행은 서버에 있던 매장 id 기준으로 유지합니다. */
+/** 월·매장 id·label·이름·목록만 로컬 기준으로 두고, 매출·상품·비용 행은 서버에 있던 매장 id 기준으로 유지합니다. */
 const mergeStructureWithSalesFromServer = (
   localMonths: MonthRecord[],
   serverMonths: MonthRecord[],
 ): MonthRecord[] => {
   const salesByStoreId = new Map<string, SalesSummaryRow[] | undefined>();
   const productsByStoreId = new Map<string, ProductSummaryRow[] | undefined>();
+  const costsByStoreId = new Map<string, CostEntryRow[] | undefined>();
   for (const m of serverMonths) {
     for (const s of m.stores) {
       salesByStoreId.set(s.id, s.salesSummaryRows);
       productsByStoreId.set(s.id, s.productSummaryRows);
+      costsByStoreId.set(s.id, s.costEntryRows);
     }
   }
   return localMonths.map((m) => ({
@@ -311,6 +413,7 @@ const mergeStructureWithSalesFromServer = (
       name: s.name,
       salesSummaryRows: salesByStoreId.get(s.id),
       productSummaryRows: productsByStoreId.get(s.id),
+      costEntryRows: costsByStoreId.get(s.id),
     })),
   }));
 };
@@ -321,6 +424,28 @@ const emptyStore = (name: string): StoreRecord => ({
 });
 
 const money = new Intl.NumberFormat("ko-KR");
+
+/** 테이블 표시용: 파일 값이 목록에 없으면 해당 행 옵션에 포함 */
+const COST_EXPENSE_KIND_PRESETS = [
+  "임대료",
+  "전기·수도",
+  "통신비",
+  "소모품",
+  "광고",
+  "급여",
+  "세금·공과금",
+  "수수료",
+  "기타",
+] as const;
+const COST_TAX_MODE_PRESETS = ["과세", "면세", "불공제", "영세", "기타"] as const;
+const COST_PAY_STATUS_PRESETS = ["결제", "미결제"] as const;
+
+const withValueOption = (presets: readonly string[], value: string): string[] => {
+  const v = value.trim();
+  const list = [...presets];
+  if (v && !list.includes(v)) list.push(v);
+  return v ? list : ["", ...list];
+};
 
 const App = () => {
   const [months, setMonths] = useState<MonthRecord[]>([]);
@@ -344,8 +469,18 @@ const App = () => {
   const [productModalProgress, setProductModalProgress] = useState("");
   const [productParsedRows, setProductParsedRows] = useState<ProductSummaryRow[] | null>(null);
   const productModalFileInputRef = useRef<HTMLInputElement>(null);
+  /** 비용 등록 업로드 모달 */
+  const [costModalOpen, setCostModalOpen] = useState(false);
+  const [costModalPhase, setCostModalPhase] = useState<"pick" | "reading" | "ready" | "saving" | "error">("pick");
+  const [costModalProgress, setCostModalProgress] = useState("");
+  const [costParsedRows, setCostParsedRows] = useState<CostEntryRow[] | null>(null);
+  const costModalFileInputRef = useRef<HTMLInputElement>(null);
   /** 매장별 데이터 패널 탭 */
-  const [storeDataTab, setStoreDataTab] = useState<"sales" | "products">("sales");
+  const [storeDataTab, setStoreDataTab] = useState<"sales" | "products" | "costs">("sales");
+  /** 첫 loadState 완료 여부 (로컬/배포 최초 접속 로딩) */
+  const [remoteDataReady, setRemoteDataReady] = useState(false);
+  /** 월·매장 저장(서버 병합) 진행 중 */
+  const [saveMergeBusy, setSaveMergeBusy] = useState(false);
 
   useEffect(() => {
     const run = async () => {
@@ -360,12 +495,15 @@ const App = () => {
         setMonths([]);
         setActiveMonthId(null);
         setActiveStoreId(null);
+      } finally {
+        setRemoteDataReady(true);
       }
     };
     void run();
   }, []);
 
   const saveNow = async () => {
+    setSaveMergeBusy(true);
     try {
       const local = monthsRef.current;
       const server = await loadState();
@@ -377,6 +515,8 @@ const App = () => {
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown save error";
       setSyncError(message);
+    } finally {
+      setSaveMergeBusy(false);
     }
   };
 
@@ -495,6 +635,34 @@ const App = () => {
     }
   };
 
+  const persistCostRows = async (
+    rows: CostEntryRow[],
+  ): Promise<{ ok: true } | { ok: false; message: string }> => {
+    if (!activeMonthId || !activeStoreId) {
+      return { ok: false, message: "월 또는 매장이 선택되지 않았습니다." };
+    }
+    const next = monthsRef.current.map((month) => {
+      if (month.id !== activeMonthId) return month;
+      return {
+        ...month,
+        stores: month.stores.map((s) =>
+          s.id === activeStoreId ? { ...s, costEntryRows: rows } : s,
+        ),
+      };
+    });
+    monthsRef.current = next;
+    setMonths(next);
+    setSyncError("");
+    try {
+      await saveState(next);
+      return { ok: true };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown save error";
+      setSyncError(message);
+      return { ok: false, message };
+    }
+  };
+
   const persistSalesRows = async (
     rows: SalesSummaryRow[],
   ): Promise<{ ok: true } | { ok: false; message: string }> => {
@@ -539,9 +707,17 @@ const App = () => {
     if (productModalFileInputRef.current) productModalFileInputRef.current.value = "";
   }, []);
 
+  const resetCostModal = useCallback(() => {
+    setCostModalOpen(false);
+    setCostModalPhase("pick");
+    setCostModalProgress("");
+    setCostParsedRows(null);
+    if (costModalFileInputRef.current) costModalFileInputRef.current.value = "";
+  }, []);
+
   const openProductUploadModal = () => {
     if (!activeMonthId || !activeStoreId || !activeStore) return;
-    if (productModalOpen || salesModalOpen) return;
+    if (productModalOpen || salesModalOpen || costModalOpen) return;
     setProductModalOpen(true);
     setProductModalPhase("pick");
     setProductModalProgress("파일을 선택해 주세요.");
@@ -621,9 +797,91 @@ const App = () => {
     resetProductModal();
   };
 
+  const openCostUploadModal = () => {
+    if (!activeMonthId || !activeStoreId || !activeStore) return;
+    if (costModalOpen || salesModalOpen || productModalOpen) return;
+    setCostModalOpen(true);
+    setCostModalPhase("pick");
+    setCostModalProgress("파일을 선택해 주세요.");
+    setCostParsedRows(null);
+    if (costModalFileInputRef.current) costModalFileInputRef.current.value = "";
+  };
+
+  const closeCostModal = useCallback(() => {
+    if (costModalPhase === "reading" || costModalPhase === "saving") return;
+    if (costModalPhase === "ready" && costParsedRows !== null) {
+      if (!window.confirm("저장하지 않고 닫으시겠습니까?")) return;
+    }
+    resetCostModal();
+  }, [costModalPhase, costParsedRows, resetCostModal]);
+
+  useEffect(() => {
+    if (!costModalOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      closeCostModal();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [costModalOpen, closeCostModal]);
+
+  const onCostModalFileChange = async (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0] ?? null;
+    e.target.value = "";
+    if (!file || !activeMonthId || !activeStoreId || !activeStore) return;
+
+    const ext = file.name.includes(".") ? file.name.split(".").pop()?.toLowerCase() : "";
+    if (!ext || !["xls", "xlsx", "csv"].includes(ext)) {
+      window.alert("xls, xlsx, csv 파일만 업로드할 수 있습니다.");
+      return;
+    }
+
+    const hasSaved = (activeStore.costEntryRows?.length ?? 0) > 0;
+    if (hasSaved && !window.confirm("저장 데이터가 있습니다. 재업로드 하시겠습니까?")) {
+      return;
+    }
+
+    setCostModalPhase("reading");
+    setCostModalProgress("파일을 읽는 중…");
+    try {
+      await new Promise((r) => requestAnimationFrame(() => r(undefined)));
+      setCostModalProgress("시트에서 행을 불러오는 중…");
+      const rows = await parseCostFile(file);
+      setCostModalProgress("결제일·비용 종류·업체명·합계금액 등 컬럼을 확인하는 중…");
+      await new Promise((r) => setTimeout(r, 200));
+      setCostParsedRows(rows);
+      setCostModalPhase("ready");
+      setCostModalProgress(
+        rows.length === 0
+          ? "분석 결과 행이 없습니다. 저장하면 기존 비용 등록이 비워질 수 있습니다."
+          : `${rows.length}건을 불러왔습니다. 저장을 누르면 서버에 반영됩니다.`,
+      );
+    } catch (err) {
+      setCostModalPhase("error");
+      setCostModalProgress(err instanceof Error ? err.message : "파일 분석에 실패했습니다.");
+    }
+  };
+
+  const onCostModalSave = async () => {
+    if (!costParsedRows || !activeMonthId || !activeStoreId) return;
+    setCostModalPhase("saving");
+    setCostModalProgress("추출한 컬럼으로 매장 데이터를 정리하는 중…");
+    await new Promise((r) => setTimeout(r, 180));
+    setCostModalProgress("데이터베이스에 저장하는 중…");
+    const result = await persistCostRows(costParsedRows);
+    if (!result.ok) {
+      setCostModalPhase("ready");
+      setCostModalProgress(`저장에 실패했습니다: ${result.message} (저장을 다시 눌러 재시도할 수 있습니다.)`);
+      return;
+    }
+    setCostModalProgress("모든 작업이 완료되었습니다.");
+    await new Promise((r) => setTimeout(r, 450));
+    resetCostModal();
+  };
+
   const openSalesUploadModal = () => {
     if (!activeMonthId || !activeStoreId || !activeStore) return;
-    if (salesModalOpen || productModalOpen) return;
+    if (salesModalOpen || productModalOpen || costModalOpen) return;
     setSalesModalOpen(true);
     setSalesModalPhase("pick");
     setSalesModalProgress("파일을 선택해 주세요.");
@@ -702,6 +960,11 @@ const App = () => {
     await new Promise((r) => setTimeout(r, 450));
     resetSalesModal();
   };
+
+  const salesTabLoading = salesModalOpen && (salesModalPhase === "reading" || salesModalPhase === "saving");
+  const productTabLoading =
+    productModalOpen && (productModalPhase === "reading" || productModalPhase === "saving");
+  const costTabLoading = costModalOpen && (costModalPhase === "reading" || costModalPhase === "saving");
 
   return (
     <main className="layout">
@@ -788,7 +1051,12 @@ const App = () => {
             <br />
 
             <div className="save-row">
-              <button type="button" className="btn-save" onClick={() => void saveNow()}>
+              <button
+                type="button"
+                className="btn-save"
+                disabled={saveMergeBusy}
+                onClick={() => void saveNow()}
+              >
                 저장
               </button>
             </div>
@@ -796,7 +1064,29 @@ const App = () => {
         )}
       </section>
 
-      {activeMonth && (
+      {!remoteDataReady && (
+        <section className="panel">
+          <div className="panel-heading">
+            <h2>매장별 데이터</h2>
+            <span className="panel-heading-spacer" aria-hidden={true}>
+              {"\u00A0\u00A0"}
+            </span>
+            <p className="muted card-meta">서버에서 불러오는 중…</p>
+          </div>
+          <div
+            className="store-data-boot tab-panel-with-loader"
+            role="status"
+            aria-live="polite"
+            aria-busy={true}
+          >
+            <div className="tab-loading-overlay boot-loading-overlay">
+              <span className="tab-loading-spinner" />
+            </div>
+          </div>
+        </section>
+      )}
+
+      {remoteDataReady && activeMonth && (
         <>
           <section className="panel">
             <div className="panel-heading">
@@ -819,6 +1109,7 @@ const App = () => {
               </p>
             </div>
 
+            <div className="store-data-shell tab-panel-with-loader">
             <div className="store-data-tabbed">
               <br />
               <div className="tab-bar" role="tablist" aria-label="매장별 데이터 구분">
@@ -844,6 +1135,17 @@ const App = () => {
                 >
                   상품 요약
                 </button>
+                <button
+                  type="button"
+                  id="store-tab-costs"
+                  role="tab"
+                  aria-selected={storeDataTab === "costs"}
+                  aria-controls="store-panel-costs"
+                  className={`tab-trigger${storeDataTab === "costs" ? " tab-trigger-active" : ""}`}
+                  onClick={() => setStoreDataTab("costs")}
+                >
+                  비용 등록
+                </button>
               </div>
 
               <div
@@ -851,7 +1153,7 @@ const App = () => {
                 role="tabpanel"
                 aria-labelledby="store-tab-sales"
                 hidden={storeDataTab !== "sales"}
-                className="tab-panel"
+                className="tab-panel tab-panel-with-loader"
               >
                 <div className="sales-block">
                   <br />
@@ -864,7 +1166,7 @@ const App = () => {
                         </span>
                         <button
                           type="button"
-                          disabled={salesModalOpen || productModalOpen}
+                          disabled={salesModalOpen || productModalOpen || costModalOpen}
                           onClick={openSalesUploadModal}
                         >
                           upload
@@ -913,6 +1215,11 @@ const App = () => {
                     </>
                   )}
                 </div>
+                {salesTabLoading && (
+                  <div className="tab-loading-overlay" role="status" aria-live="polite">
+                    <span className="tab-loading-spinner" />
+                  </div>
+                )}
               </div>
 
               <div
@@ -920,7 +1227,7 @@ const App = () => {
                 role="tabpanel"
                 aria-labelledby="store-tab-products"
                 hidden={storeDataTab !== "products"}
-                className="tab-panel"
+                className="tab-panel tab-panel-with-loader"
               >
                 <div className="sales-block">
                   <br />
@@ -933,7 +1240,7 @@ const App = () => {
                         </span>
                         <button
                           type="button"
-                          disabled={salesModalOpen || productModalOpen}
+                          disabled={salesModalOpen || productModalOpen || costModalOpen}
                           onClick={openProductUploadModal}
                         >
                           upload
@@ -981,10 +1288,214 @@ const App = () => {
                     </>
                   )}
                 </div>
+                {productTabLoading && (
+                  <div className="tab-loading-overlay" role="status" aria-live="polite">
+                    <span className="tab-loading-spinner" />
+                  </div>
+                )}
               </div>
+
+              <div
+                id="store-panel-costs"
+                role="tabpanel"
+                aria-labelledby="store-tab-costs"
+                hidden={storeDataTab !== "costs"}
+                className="tab-panel tab-panel-with-loader"
+              >
+                <div className="sales-block">
+                  <br />
+                  <div className="sales-heading">
+                    <h3>비용 등록 데이터</h3>
+                    {activeStore && (
+                      <>
+                        <span className="panel-heading-spacer" aria-hidden={true}>
+                          {"\u00A0\u00A0"}
+                        </span>
+                        <button
+                          type="button"
+                          disabled={salesModalOpen || productModalOpen || costModalOpen}
+                          onClick={openCostUploadModal}
+                        >
+                          upload
+                        </button>
+                      </>
+                    )}
+                  </div>
+                  {!activeStore ? (
+                    <p className="muted">매장을 선택한 뒤 파일을 업로드할 수 있습니다.</p>
+                  ) : (
+                    <div className="data-table-scroll">
+                      {(activeStore.costEntryRows?.length ?? 0) > 0 && (
+                        <table className="data-table data-table-costs">
+                          <thead>
+                            <tr>
+                              <th>결제일</th>
+                              <th>비용 종류</th>
+                              <th>업체명</th>
+                              <th>합계금액</th>
+                              <th>공급가액</th>
+                              <th>부가세</th>
+                              <th>과세/부과세</th>
+                              <th>결제/미결제</th>
+                              <th>메모</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {activeStore.costEntryRows!.map((row) => (
+                              <tr key={row.id}>
+                                <td>{row.paymentDate}</td>
+                                <td>
+                                  <select
+                                    className="data-table-select"
+                                    disabled
+                                    value={row.expenseKind}
+                                    aria-label="비용 종류"
+                                  >
+                                    {withValueOption(COST_EXPENSE_KIND_PRESETS, row.expenseKind).map((opt) => (
+                                      <option key={opt} value={opt}>
+                                        {opt}
+                                      </option>
+                                    ))}
+                                  </select>
+                                </td>
+                                <td>{row.vendorName}</td>
+                                <td>{money.format(row.totalAmount)}</td>
+                                <td>{money.format(row.supplyAmount)}</td>
+                                <td>{money.format(row.vat)}</td>
+                                <td>
+                                  <select
+                                    className="data-table-select"
+                                    disabled
+                                    value={row.taxMode}
+                                    aria-label="과세/부과세"
+                                  >
+                                    {withValueOption(COST_TAX_MODE_PRESETS, row.taxMode).map((opt) => (
+                                      <option key={opt} value={opt}>
+                                        {opt}
+                                      </option>
+                                    ))}
+                                  </select>
+                                </td>
+                                <td>
+                                  <select
+                                    className="data-table-select"
+                                    disabled
+                                    value={row.payStatus}
+                                    aria-label="결제/미결제"
+                                  >
+                                    {withValueOption(COST_PAY_STATUS_PRESETS, row.payStatus).map((opt) => (
+                                      <option key={opt} value={opt}>
+                                        {opt}
+                                      </option>
+                                    ))}
+                                  </select>
+                                </td>
+                                <td>{row.memo}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      )}
+                    </div>
+                  )}
+                </div>
+                {costTabLoading && (
+                  <div className="tab-loading-overlay" role="status" aria-live="polite">
+                    <span className="tab-loading-spinner" />
+                  </div>
+                )}
+              </div>
+            </div>
+            {saveMergeBusy && (
+              <div className="tab-loading-overlay" role="status" aria-live="polite">
+                <span className="tab-loading-spinner" />
+              </div>
+            )}
             </div>
           </section>
         </>
+      )}
+
+      {costModalOpen && activeStore && (
+        <div
+          className="modal-backdrop"
+          role="presentation"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) closeCostModal();
+          }}
+        >
+          <div
+            className="modal-panel"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="cost-modal-title"
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <div className="modal-header">
+              <h3 id="cost-modal-title">비용 등록 업로드</h3>
+              <button
+                type="button"
+                className="modal-close"
+                aria-label="닫기"
+                disabled={costModalPhase === "reading" || costModalPhase === "saving"}
+                onClick={closeCostModal}
+              >
+                ×
+              </button>
+            </div>
+            <p className="modal-progress" role="status" aria-live="polite">
+              {costModalProgress}
+            </p>
+            {(costModalPhase === "pick" || costModalPhase === "error") && (
+              <div className="modal-actions">
+                <button type="button" onClick={() => costModalFileInputRef.current?.click()}>
+                  파일 선택
+                </button>
+                <button type="button" className="btn-secondary" onClick={closeCostModal}>
+                  취소
+                </button>
+              </div>
+            )}
+            {costModalPhase === "reading" && (
+              <div className="modal-progress-bar" aria-hidden={true}>
+                <span className="modal-progress-bar-fill modal-progress-bar-indeterminate" />
+              </div>
+            )}
+            {costModalPhase === "ready" && (
+              <div className="modal-actions">
+                <button type="button" className="btn-save" onClick={() => void onCostModalSave()}>
+                  저장
+                </button>
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  onClick={() => {
+                    setCostModalPhase("pick");
+                    setCostParsedRows(null);
+                    setCostModalProgress("파일을 선택해 주세요.");
+                  }}
+                >
+                  다른 파일
+                </button>
+              </div>
+            )}
+            {costModalPhase === "saving" && (
+              <div className="modal-progress-bar" aria-hidden={true}>
+                <span className="modal-progress-bar-fill modal-progress-bar-indeterminate" />
+              </div>
+            )}
+            {costModalPhase === "error" && (
+              <p className="error modal-error">파일을 다시 선택하거나 취소할 수 있습니다.</p>
+            )}
+            <input
+              ref={costModalFileInputRef}
+              type="file"
+              accept=".xls,.xlsx,.csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv"
+              className="visually-hidden"
+              onChange={(e) => void onCostModalFileChange(e)}
+            />
+          </div>
+        </div>
       )}
 
       {productModalOpen && activeStore && (

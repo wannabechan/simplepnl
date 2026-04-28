@@ -149,6 +149,19 @@ button {
   margin-top: 4px;
 }
 
+.store-data-shell {
+  margin-top: 4px;
+}
+
+.store-data-boot {
+  margin-top: 8px;
+  min-height: 200px;
+}
+
+.boot-loading-overlay {
+  border-radius: 8px;
+}
+
 .tab-bar {
   display: flex;
   flex-wrap: wrap;
@@ -184,6 +197,37 @@ button {
 .tab-panel-placeholder {
   padding: 8px 0 16px;
   min-height: 120px;
+}
+
+.tab-panel-with-loader {
+  position: relative;
+  min-height: 140px;
+}
+
+.tab-loading-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.66);
+  backdrop-filter: blur(1px);
+  z-index: 2;
+}
+
+.tab-loading-spinner {
+  width: 34px;
+  height: 34px;
+  border-radius: 999px;
+  border: 3px solid #dbeafe;
+  border-top-color: #2563eb;
+  animation: tab-spin 0.8s linear infinite;
+}
+
+@keyframes tab-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .sales-block {
@@ -225,6 +269,34 @@ button {
 
 .data-table th {
   background: #f9fafb;
+}
+
+.data-table-scroll {
+  overflow-x: auto;
+  margin-top: 12px;
+  -webkit-overflow-scrolling: touch;
+}
+
+.data-table-costs {
+  min-width: 1000px;
+}
+
+.data-table-select {
+  width: 100%;
+  max-width: 160px;
+  min-width: 96px;
+  font-size: 13px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  border: 1px solid #d1d5db;
+  background: #f9fafb;
+  color: #1f2937;
+}
+
+.data-table-select:disabled {
+  opacity: 1;
+  cursor: default;
+  color: #1f2937;
 }
 
 .modal-backdrop {
