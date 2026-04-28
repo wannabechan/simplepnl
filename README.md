@@ -1,6 +1,6 @@
 # simplepnl
 
-월별 매장 손익 리포트 웹앱입니다.
+**월·매장 구성**만 다루는 웹앱입니다. (손익·파일 업로드·비용 정리 등은 제거된 상태이며, 이후 다시 설계 예정입니다.)
 
 ## 1) Vercel Storage (Postgres/Neon) 준비
 
@@ -17,6 +17,10 @@ DATABASE_URL=...
 
 > 앱 상태는 **서버(DB)만** 사용합니다. 브라우저 localStorage에는 저장하지 않습니다.
 > 로컬에서 배포와 동일한 DB를 보려면 `vercel link` / `vercel env pull`로 `DATABASE_URL`을 맞춘 뒤 **`vercel dev`** 로 실행하세요. (`npm run dev`만 쓰면 `/api/state`가 없어 불러오기/저장이 실패합니다.)
+
+`vercel dev`에서 **`startsWith` / exit code 1** 이 나오던 경우는, Vite 루트의 solution형 `tsconfig.json`과 맞물려 **`api/*.ts` 서버리스 번들이 깨지는** CLI 이슈로 보입니다. 그래서 API는 **`api/state.mjs`**(순수 ESM, TypeScript 미사용)로 두어 해당 경로를 피했습니다. 변경 후 **`vercel dev`를 완전히 종료했다가 다시 실행**하세요.
+
+`@neondatabase/serverless`는 **Node 19+** 엔진을 요구합니다. 로컬 Node가 너무 낮으면 `nvm use 20`(또는 22) 등으로 올린 뒤 다시 시도하세요.
 
 ## 3) 실행
 

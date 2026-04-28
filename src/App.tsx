@@ -1,87 +1,24 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
-interface CategorySales {
-  category: string;
-  amount: number;
-}
-
-type ManualRevenueChannel = "cash" | "card" | "other";
-
-interface ManualRevenueEntry {
-  id: string;
-  date: string;
-  channel: ManualRevenueChannel;
-  amount: number;
-  note: string;
-}
-
 interface StoreRecord {
   id: string;
   name: string;
-  salesSummary: {
-    cashSales: number;
-    cardSales: number;
-  };
-  categorySales: CategorySales[];
-  manualRevenueEntries: ManualRevenueEntry[];
-  uploadedSalesSummaryFileName?: string;
-  uploadedCategorySalesFileName?: string;
-  inventory: {
-    menu: string;
-    beverage: string;
-  };
-}
-
-interface CardStatementRow {
-  id: string;
-  date: string;
-  vendor: string;
-  amount: number;
-  rawCategory: string;
-  assignedStoreId: string;
-  assignedAccount: string;
-}
-
-interface CardStatementFile {
-  id: string;
-  fileName: string;
-  rows: CardStatementRow[];
 }
 
 interface MonthRecord {
   id: string;
   label: string;
   stores: StoreRecord[];
-  cardStatementFiles: CardStatementFile[];
-  purchaseTaxInvoiceFileName?: string;
-  purchaseInvoiceFileName?: string;
-  purchaseEvidenceFileName?: string;
 }
 
 const nowId = () => `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 const normalize = (value: string) => value.trim().toLowerCase().replace(/\s+/g, "");
 
 const normalizeStore = (raw: unknown): StoreRecord => {
-  const s = raw as Partial<StoreRecord> & Record<string, unknown>;
-  const ss = s.salesSummary as { cashSales?: unknown; cardSales?: unknown } | undefined;
-  const inv = s.inventory as { menu?: unknown; beverage?: unknown } | undefined;
+  const s = raw as Record<string, unknown>;
   return {
     id: typeof s.id === "string" ? s.id : nowId(),
     name: typeof s.name === "string" ? s.name : "",
-    salesSummary: {
-      cashSales: Number(ss?.cashSales) || 0,
-      cardSales: Number(ss?.cardSales) || 0,
-    },
-    categorySales: Array.isArray(s.categorySales) ? (s.categorySales as CategorySales[]) : [],
-    manualRevenueEntries: Array.isArray(s.manualRevenueEntries) ? (s.manualRevenueEntries as ManualRevenueEntry[]) : [],
-    uploadedSalesSummaryFileName:
-      typeof s.uploadedSalesSummaryFileName === "string" ? s.uploadedSalesSummaryFileName : undefined,
-    uploadedCategorySalesFileName:
-      typeof s.uploadedCategorySalesFileName === "string" ? s.uploadedCategorySalesFileName : undefined,
-    inventory: {
-      menu: typeof inv?.menu === "string" ? inv.menu : "",
-      beverage: typeof inv?.beverage === "string" ? inv.beverage : "",
-    },
   };
 };
 
@@ -89,37 +26,7 @@ const migrateMonthRecord = (raw: Record<string, unknown>): MonthRecord => {
   const stores = Array.isArray(raw.stores) ? (raw.stores as unknown[]).map(normalizeStore) : [];
   const label = typeof raw.label === "string" ? raw.label : "";
   const id = typeof raw.id === "string" ? raw.id : nowId();
-
-  if (Array.isArray(raw.cardStatementFiles)) {
-    const cardStatementFiles = (raw.cardStatementFiles as Partial<CardStatementFile>[]).map((f) => ({
-      id: typeof f.id === "string" ? f.id : nowId(),
-      fileName: typeof f.fileName === "string" ? f.fileName : "파일",
-      rows: Array.isArray(f.rows) ? (f.rows as CardStatementRow[]) : [],
-    }));
-    return {
-      id,
-      label,
-      stores,
-      cardStatementFiles,
-      purchaseTaxInvoiceFileName: typeof raw.purchaseTaxInvoiceFileName === "string" ? raw.purchaseTaxInvoiceFileName : undefined,
-      purchaseInvoiceFileName: typeof raw.purchaseInvoiceFileName === "string" ? raw.purchaseInvoiceFileName : undefined,
-      purchaseEvidenceFileName: typeof raw.purchaseEvidenceFileName === "string" ? raw.purchaseEvidenceFileName : undefined,
-    };
-  }
-
-  const legacyRows = Array.isArray(raw.cardStatements) ? (raw.cardStatements as CardStatementRow[]) : [];
-  return {
-    id,
-    label,
-    stores,
-    cardStatementFiles:
-      legacyRows.length > 0
-        ? [{ id: nowId(), fileName: "카드내역서(이전)", rows: legacyRows }]
-        : [],
-    purchaseTaxInvoiceFileName: typeof raw.purchaseTaxInvoiceFileName === "string" ? raw.purchaseTaxInvoiceFileName : undefined,
-    purchaseInvoiceFileName: typeof raw.purchaseInvoiceFileName === "string" ? raw.purchaseInvoiceFileName : undefined,
-    purchaseEvidenceFileName: typeof raw.purchaseEvidenceFileName === "string" ? raw.purchaseEvidenceFileName : undefined,
-  };
+  return { id, label, stores };
 };
 
 const sanitizeMonths = (value: unknown): MonthRecord[] => {
@@ -154,12 +61,6 @@ const saveState = async (months: MonthRecord[]) => {
 const emptyStore = (name: string): StoreRecord => ({
   id: nowId(),
   name,
-  salesSummary: { cashSales: 0, cardSales: 0 },
-  categorySales: [],
-  manualRevenueEntries: [],
-  uploadedSalesSummaryFileName: undefined,
-  uploadedCategorySalesFileName: undefined,
-  inventory: { menu: "", beverage: "" },
 });
 
 const App = () => {
@@ -219,7 +120,6 @@ const App = () => {
       id: nowId(),
       label: monthLabel.trim(),
       stores: [],
-      cardStatementFiles: [],
     };
     setMonths((prev) => [...prev, month]);
     setActiveMonthId(month.id);
@@ -274,16 +174,7 @@ const App = () => {
       if (activeStoreId === storeId) {
         setActiveStoreId(stores[0]?.id ?? null);
       }
-      return {
-        ...month,
-        stores,
-        cardStatementFiles: month.cardStatementFiles.map((file) => ({
-          ...file,
-          rows: file.rows.map((row) =>
-            row.assignedStoreId === storeId ? { ...row, assignedStoreId: "" } : row,
-          ),
-        })),
-      };
+      return { ...month, stores };
     });
   };
 
@@ -299,8 +190,8 @@ const App = () => {
   return (
     <main className="layout">
       <section className="panel">
-        <h1>월별 손익 리포트 (공급가액 기준)</h1>
-        <p className="muted">구조: 월 생성 · 월 하위 매장 생성</p>
+        <h1>월·매장 구성</h1>
+        <p className="muted">월을 만들고, 그 아래 매장을 추가합니다.</p>
         <p className="muted">
           저장: 저장 버튼으로 서버(DB)에 반영 · 상태:{" "}
           {saveStatus === "saving" ? "저장 중" : saveStatus === "saved" ? "저장 완료" : saveStatus === "error" ? "저장 실패" : "대기"}
