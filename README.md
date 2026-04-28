@@ -15,13 +15,19 @@
 DATABASE_URL=...
 ```
 
-> 로컬에서 `npm run dev` 실행 시 `/api`는 Vite에서 동작하지 않으므로 localStorage 캐시로 동작합니다.
-> 서버 저장까지 로컬에서 테스트하려면 `vercel dev`를 사용하세요.
+> 앱 상태는 **서버(DB)만** 사용합니다. 브라우저 localStorage에는 저장하지 않습니다.
+> 로컬에서 배포와 동일한 DB를 보려면 `vercel link` / `vercel env pull`로 `DATABASE_URL`을 맞춘 뒤 **`vercel dev`** 로 실행하세요. (`npm run dev`만 쓰면 `/api/state`가 없어 불러오기/저장이 실패합니다.)
 
 ## 3) 실행
 
 ```bash
 npm install
+vercel dev
+```
+
+UI만 빠르게 볼 때(저장 없이):
+
+```bash
 npm run dev
 ```
 
@@ -31,5 +37,4 @@ Vercel Project Settings > Environment Variables에서 아래 값 확인:
 
 - `DATABASE_URL`
 
-배포 후 앱은 `/api/state`를 통해 DB에 저장하고, 브라우저에는 캐시로도 저장합니다.
-브라우저 데이터 삭제 후에도 DB 데이터는 유지됩니다.
+배포 후 앱은 `/api/state`를 통해 DB에만 저장합니다.

@@ -200,32 +200,3 @@ button {
   background: #dbeafe;
   border-color: #60a5fa;
 }
-
-.card-statement-split {
-  align-items: start;
-}
-
-.card-statement-panel .nested-table {
-  margin-top: 10px;
-  font-size: 12px;
-}
-
-.card-statement-panel .nested-table th,
-.card-statement-panel .nested-table td {
-  padding: 6px;
-}
-
-table {
-  width: 100%;
-  border-collapse: collapse;
-  margin-top: 8px;
-}
-
-th,
-td {
-  border: 1px solid #e5e7eb;
-  padding: 8px;
-  text-align: left;
-  font-size: 13px;
-}
-

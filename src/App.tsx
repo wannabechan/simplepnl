@@ -1,22 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
-type EvidenceType = "taxInvoice" | "invoice" | "otherEvidence" | "cardSlip";
-type ExpenseSource = "manual" | "cardStatement" | "purchaseAuto";
-
 interface CategorySales {
   category: string;
   amount: number;
-}
-
-interface Expense {
-  id: string;
-  date: string;
-  vendor: string;
-  category: string;
-  amount: number;
-  note: string;
-  source: ExpenseSource;
-  evidence: Record<EvidenceType, boolean>;
 }
 
 type ManualRevenueChannel = "cash" | "card" | "other";
@@ -44,7 +30,6 @@ interface StoreRecord {
     menu: string;
     beverage: string;
   };
-  expenses: Expense[];
 }
 
 interface CardStatementRow {
@@ -73,24 +58,35 @@ interface MonthRecord {
   purchaseEvidenceFileName?: string;
 }
 
-const APP_STATE_ID = "simplepnl-main-v2";
-const money = new Intl.NumberFormat("ko-KR");
 const nowId = () => `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 const normalize = (value: string) => value.trim().toLowerCase().replace(/\s+/g, "");
 
-const readLocalState = (): MonthRecord[] => {
-  const raw = localStorage.getItem(APP_STATE_ID);
-  if (!raw) return [];
-  return JSON.parse(raw) as MonthRecord[];
+const normalizeStore = (raw: unknown): StoreRecord => {
+  const s = raw as Partial<StoreRecord> & Record<string, unknown>;
+  const ss = s.salesSummary as { cashSales?: unknown; cardSales?: unknown } | undefined;
+  const inv = s.inventory as { menu?: unknown; beverage?: unknown } | undefined;
+  return {
+    id: typeof s.id === "string" ? s.id : nowId(),
+    name: typeof s.name === "string" ? s.name : "",
+    salesSummary: {
+      cashSales: Number(ss?.cashSales) || 0,
+      cardSales: Number(ss?.cardSales) || 0,
+    },
+    categorySales: Array.isArray(s.categorySales) ? (s.categorySales as CategorySales[]) : [],
+    manualRevenueEntries: Array.isArray(s.manualRevenueEntries) ? (s.manualRevenueEntries as ManualRevenueEntry[]) : [],
+    uploadedSalesSummaryFileName:
+      typeof s.uploadedSalesSummaryFileName === "string" ? s.uploadedSalesSummaryFileName : undefined,
+    uploadedCategorySalesFileName:
+      typeof s.uploadedCategorySalesFileName === "string" ? s.uploadedCategorySalesFileName : undefined,
+    inventory: {
+      menu: typeof inv?.menu === "string" ? inv.menu : "",
+      beverage: typeof inv?.beverage === "string" ? inv.beverage : "",
+    },
+  };
 };
 
-const normalizeStore = (store: StoreRecord): StoreRecord => ({
-  ...store,
-  manualRevenueEntries: Array.isArray(store.manualRevenueEntries) ? store.manualRevenueEntries : [],
-});
-
 const migrateMonthRecord = (raw: Record<string, unknown>): MonthRecord => {
-  const stores = Array.isArray(raw.stores) ? (raw.stores as StoreRecord[]).map((s) => normalizeStore(s)) : [];
+  const stores = Array.isArray(raw.stores) ? (raw.stores as unknown[]).map(normalizeStore) : [];
   const label = typeof raw.label === "string" ? raw.label : "";
   const id = typeof raw.id === "string" ? raw.id : nowId();
 
@@ -134,18 +130,16 @@ const sanitizeMonths = (value: unknown): MonthRecord[] => {
 };
 
 const loadState = async (): Promise<MonthRecord[]> => {
-  try {
-    const response = await fetch("/api/state");
-    if (!response.ok) throw new Error("load failed");
-    const payload = (await response.json()) as { data?: MonthRecord[] };
-    return sanitizeMonths(payload.data);
-  } catch {
-    return sanitizeMonths(readLocalState());
+  const response = await fetch("/api/state");
+  if (!response.ok) {
+    const details = await response.text();
+    throw new Error(`상태 불러오기 실패 (${response.status}): ${details || response.statusText}`);
   }
+  const payload = (await response.json()) as { data?: MonthRecord[] };
+  return sanitizeMonths(payload.data);
 };
 
 const saveState = async (months: MonthRecord[]) => {
-  localStorage.setItem(APP_STATE_ID, JSON.stringify(months));
   const response = await fetch("/api/state", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
@@ -166,7 +160,6 @@ const emptyStore = (name: string): StoreRecord => ({
   uploadedSalesSummaryFileName: undefined,
   uploadedCategorySalesFileName: undefined,
   inventory: { menu: "", beverage: "" },
-  expenses: [],
 });
 
 const App = () => {
@@ -190,6 +183,9 @@ const App = () => {
       } catch (error) {
         const message = error instanceof Error ? error.message : "Unknown load error";
         setSyncError(message);
+        setMonths([]);
+        setActiveMonthId(null);
+        setActiveStoreId(null);
       }
     };
     void run();
@@ -306,7 +302,7 @@ const App = () => {
         <h1>월별 손익 리포트 (공급가액 기준)</h1>
         <p className="muted">구조: 월 생성 · 월 하위 매장 생성</p>
         <p className="muted">
-          저장: 각 입력 영역 하단의 저장 버튼으로 반영 · API + localStorage / 상태:{" "}
+          저장: 저장 버튼으로 서버(DB)에 반영 · 상태:{" "}
           {saveStatus === "saving" ? "저장 중" : saveStatus === "saved" ? "저장 완료" : saveStatus === "error" ? "저장 실패" : "대기"}
         </p>
         {syncError && <p className="error">{syncError}</p>}
@@ -396,45 +392,6 @@ const App = () => {
           </>
         )}
       </section>
-
-      {activeMonth && (
-        <section className="panel">
-          <h2>{activeMonth.label}</h2>
-
-          <h3>매장별 비용 항목</h3>
-          <table>
-            <thead>
-              <tr>
-                <th>매장</th>
-                <th>일자</th>
-                <th>거래처</th>
-                <th>분류</th>
-                <th>공급가액</th>
-                <th>증빙</th>
-              </tr>
-            </thead>
-            <tbody>
-              {activeMonth.stores.flatMap((store) =>
-                store.expenses.map((expense) => (
-                  <tr key={`${store.id}-${expense.id}`}>
-                    <td>{store.name}</td>
-                    <td>{expense.date}</td>
-                    <td>{expense.vendor}</td>
-                    <td>{expense.category}</td>
-                    <td>{money.format(expense.amount)}</td>
-                    <td>
-                      {expense.evidence.taxInvoice ? "세금계산서 " : ""}
-                      {expense.evidence.invoice ? "계산서 " : ""}
-                      {expense.evidence.otherEvidence ? "기타증빙 " : ""}
-                      {expense.evidence.cardSlip ? "카드매출전표 " : ""}
-                    </td>
-                  </tr>
-                )),
-              )}
-            </tbody>
-          </table>
-        </section>
-      )}
     </main>
   );
 };
