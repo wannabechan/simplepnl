@@ -1,8 +1,21 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
+import * as XLSX from "xlsx";
+
+interface SalesSummaryRow {
+  id: string;
+  businessDay: string;
+  total: number;
+  paymentAmount: number;
+  supplyAmount: number;
+  vat: number;
+  discount: number;
+  paymentMethod: string;
+}
 
 interface StoreRecord {
   id: string;
   name: string;
+  salesSummaryRows?: SalesSummaryRow[];
 }
 
 interface MonthRecord {
@@ -14,11 +27,95 @@ interface MonthRecord {
 const nowId = () => `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 const normalize = (value: string) => value.trim().toLowerCase().replace(/\s+/g, "");
 
+const toNumber = (value: unknown): number => {
+  if (typeof value === "number") return Number.isFinite(value) ? value : 0;
+  if (typeof value !== "string") return 0;
+  const cleaned = value.replace(/[,원\s]/g, "");
+  const parsed = Number(cleaned);
+  return Number.isFinite(parsed) ? parsed : 0;
+};
+
+const findCell = (row: Record<string, unknown>, aliases: readonly string[]): unknown => {
+  const keys = Object.keys(row);
+  for (const alias of aliases) {
+    const target = normalize(alias);
+    const exact = keys.find((k) => normalize(k) === target);
+    if (exact !== undefined) return row[exact];
+  }
+  for (const alias of aliases) {
+    const target = normalize(alias);
+    const hit = keys.find((k) => {
+      const nk = normalize(k);
+      return nk.includes(target) || target.includes(nk);
+    });
+    if (hit !== undefined) return row[hit];
+  }
+  return undefined;
+};
+
+const parseSalesFile = async (file: File): Promise<SalesSummaryRow[]> => {
+  const buffer = await file.arrayBuffer();
+  const workbook = XLSX.read(buffer, { type: "array" });
+  const firstSheet = workbook.SheetNames[0];
+  if (!firstSheet) return [];
+  const sheet = workbook.Sheets[firstSheet];
+  const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, { defval: "" });
+
+  return rows
+    .map((row) => {
+      const businessDay = String(findCell(row, ["영업일", "일자", "날짜"]) ?? "").trim();
+      const total = toNumber(findCell(row, ["합계"]));
+      const paymentAmount = toNumber(findCell(row, ["결제금액"]));
+      const supplyAmount = toNumber(findCell(row, ["공급가액"]));
+      const vat = toNumber(findCell(row, ["부가세"]));
+      const discount = toNumber(findCell(row, ["할인"]));
+      const paymentMethod = String(findCell(row, ["결제수단"]) ?? "").trim();
+
+      return {
+        id: nowId(),
+        businessDay,
+        total,
+        paymentAmount,
+        supplyAmount,
+        vat,
+        discount,
+        paymentMethod,
+      };
+    })
+    .filter((r) => {
+      return (
+        r.businessDay !== "" ||
+        r.paymentMethod !== "" ||
+        r.total !== 0 ||
+        r.paymentAmount !== 0 ||
+        r.supplyAmount !== 0 ||
+        r.vat !== 0 ||
+        r.discount !== 0
+      );
+    });
+};
+
+const normalizeSalesRow = (raw: Partial<SalesSummaryRow>): SalesSummaryRow => ({
+  id: typeof raw.id === "string" ? raw.id : nowId(),
+  businessDay: typeof raw.businessDay === "string" ? raw.businessDay : String(raw.businessDay ?? ""),
+  total: toNumber(raw.total),
+  paymentAmount: toNumber(raw.paymentAmount),
+  supplyAmount: toNumber(raw.supplyAmount),
+  vat: toNumber(raw.vat),
+  discount: toNumber(raw.discount),
+  paymentMethod: typeof raw.paymentMethod === "string" ? raw.paymentMethod : String(raw.paymentMethod ?? ""),
+});
+
 const normalizeStore = (raw: unknown): StoreRecord => {
   const s = raw as Record<string, unknown>;
+  let salesSummaryRows: SalesSummaryRow[] | undefined;
+  if (Array.isArray(s.salesSummaryRows)) {
+    salesSummaryRows = (s.salesSummaryRows as Partial<SalesSummaryRow>[]).map(normalizeSalesRow);
+  }
   return {
     id: typeof s.id === "string" ? s.id : nowId(),
     name: typeof s.name === "string" ? s.name : "",
+    salesSummaryRows,
   };
 };
 
@@ -63,17 +160,21 @@ const emptyStore = (name: string): StoreRecord => ({
   name,
 });
 
+const money = new Intl.NumberFormat("ko-KR");
+
 const App = () => {
   const [months, setMonths] = useState<MonthRecord[]>([]);
   const monthsRef = useRef(months);
   monthsRef.current = months;
-  const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [syncError, setSyncError] = useState("");
   const [monthLabel, setMonthLabel] = useState("");
   const [activeMonthId, setActiveMonthId] = useState<string | null>(null);
   const [storeTemplateName, setStoreTemplateName] = useState("");
   const [customStoreName, setCustomStoreName] = useState("");
   const [activeStoreId, setActiveStoreId] = useState<string | null>(null);
+  const [salesUploadBusy, setSalesUploadBusy] = useState(false);
+  const salesFileInputRef = useRef<HTMLInputElement>(null);
+
   useEffect(() => {
     const run = async () => {
       try {
@@ -93,14 +194,11 @@ const App = () => {
   }, []);
 
   const saveNow = async () => {
-    setSaveStatus("saving");
     try {
       await saveState(monthsRef.current);
-      setSaveStatus("saved");
       setSyncError("");
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown save error";
-      setSaveStatus("error");
       setSyncError(message);
     }
   };
@@ -187,15 +285,65 @@ const App = () => {
       .sort((a, b) => a.localeCompare(b, "en"));
   }, [months, activeMonth]);
 
+  const activeStore = useMemo(
+    () => activeMonth?.stores.find((store) => store.id === activeStoreId) ?? null,
+    [activeMonth, activeStoreId],
+  );
+
+  const persistSalesRows = async (rows: SalesSummaryRow[]) => {
+    if (!activeMonthId || !activeStoreId) return;
+    const next = monthsRef.current.map((month) => {
+      if (month.id !== activeMonthId) return month;
+      return {
+        ...month,
+        stores: month.stores.map((s) =>
+          s.id === activeStoreId ? { ...s, salesSummaryRows: rows } : s,
+        ),
+      };
+    });
+    monthsRef.current = next;
+    setMonths(next);
+    setSyncError("");
+    try {
+      await saveState(next);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown save error";
+      setSyncError(message);
+    }
+  };
+
+  const onSalesFileChange = async (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0] ?? null;
+    e.target.value = "";
+    if (!file || !activeMonthId || !activeStoreId || !activeStore) return;
+
+    const ext = file.name.includes(".") ? file.name.split(".").pop()?.toLowerCase() : "";
+    if (!ext || !["xls", "xlsx", "csv"].includes(ext)) {
+      window.alert("xls, xlsx, csv 파일만 업로드할 수 있습니다.");
+      return;
+    }
+
+    const hasSaved = (activeStore.salesSummaryRows?.length ?? 0) > 0;
+    if (hasSaved && !window.confirm("저장 데이터가 있습니다. 재업로드 하시겠습니까?")) {
+      return;
+    }
+
+    setSalesUploadBusy(true);
+    try {
+      const rows = await parseSalesFile(file);
+      await persistSalesRows(rows);
+    } catch (err) {
+      window.alert(err instanceof Error ? err.message : "파일 분석에 실패했습니다.");
+    } finally {
+      setSalesUploadBusy(false);
+    }
+  };
+
   return (
     <main className="layout">
       <section className="panel">
         <h1>월·매장 구성</h1>
         <p className="muted">월을 만들고, 그 아래 매장을 추가합니다.</p>
-        <p className="muted">
-          저장: 저장 버튼으로 서버(DB)에 반영 · 상태:{" "}
-          {saveStatus === "saving" ? "저장 중" : saveStatus === "saved" ? "저장 완료" : saveStatus === "error" ? "저장 실패" : "대기"}
-        </p>
         {syncError && <p className="error">{syncError}</p>}
 
         <div className="row">
@@ -273,16 +421,104 @@ const App = () => {
                 </div>
               ))}
             </div>
+            <br />
 
             <div className="save-row">
               <button type="button" className="btn-save" onClick={() => void saveNow()}>
                 저장
               </button>
-              <span className="muted">월·매장 구성 변경을 서버에 저장합니다.</span>
             </div>
           </>
         )}
       </section>
+
+      {activeMonth && (
+        <>
+          <section className="panel">
+            <div className="panel-heading">
+              <h2>월 공통 데이터</h2>
+              <span className="panel-heading-spacer" aria-hidden={true}>
+                {"\u00A0\u00A0"}
+              </span>
+              <p className="muted card-meta">{activeMonth.label}</p>
+            </div>
+          </section>
+
+          <section className="panel">
+            <div className="panel-heading">
+              <h2>매장별 데이터</h2>
+              <span className="panel-heading-spacer" aria-hidden={true}>
+                {"\u00A0\u00A0"}
+              </span>
+              <p className="muted card-meta">
+                {activeStore ? `${activeMonth.label} / ${activeStore.name}` : activeMonth.label}
+              </p>
+            </div>
+
+            <div className="sales-block">
+              <br />
+              <div className="sales-heading">
+                <h3>매출 요약 데이터</h3>
+                {activeStore && (
+                  <>
+                    <span className="panel-heading-spacer" aria-hidden={true}>
+                      {"\u00A0\u00A0"}
+                    </span>
+                    <button
+                      type="button"
+                      disabled={salesUploadBusy}
+                      onClick={() => salesFileInputRef.current?.click()}
+                    >
+                      {salesUploadBusy ? "…" : "upload"}
+                    </button>
+                  </>
+                )}
+              </div>
+              {!activeStore ? (
+                <p className="muted">매장을 선택한 뒤 파일을 업로드할 수 있습니다.</p>
+              ) : (
+                <>
+                  <input
+                    ref={salesFileInputRef}
+                    type="file"
+                    accept=".xls,.xlsx,.csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv"
+                    className="visually-hidden"
+                    onChange={(e) => void onSalesFileChange(e)}
+                  />
+                  {(activeStore.salesSummaryRows?.length ?? 0) > 0 && (
+                    <table className="data-table">
+                      <thead>
+                        <tr>
+                          <th>영업일</th>
+                          <th>합계</th>
+                          <th>결제금액</th>
+                          <th>공급가액</th>
+                          <th>부가세</th>
+                          <th>할인</th>
+                          <th>결제수단</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {activeStore.salesSummaryRows!.map((row) => (
+                          <tr key={row.id}>
+                            <td>{row.businessDay}</td>
+                            <td>{money.format(row.total)}</td>
+                            <td>{money.format(row.paymentAmount)}</td>
+                            <td>{money.format(row.supplyAmount)}</td>
+                            <td>{money.format(row.vat)}</td>
+                            <td>{money.format(row.discount)}</td>
+                            <td>{row.paymentMethod}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </>
+              )}
+            </div>
+          </section>
+        </>
+      )}
     </main>
   );
 };
