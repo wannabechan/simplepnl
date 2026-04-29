@@ -826,6 +826,14 @@ const sortCostRows = (rows: CostEntryRow[]): CostEntryRow[] => {
   const uploaded = rows.filter((r) => r.entryType !== "manual");
   return [...manual, ...uploaded];
 };
+const sortCostRowsByExpenseKind = (rows: CostEntryRow[]): CostEntryRow[] =>
+  [...rows].sort((a, b) => {
+    const kindCmp = (a.expenseKind ?? "").trim().localeCompare((b.expenseKind ?? "").trim(), "ko");
+    if (kindCmp !== 0) return kindCmp;
+    const vendorCmp = (a.vendorName ?? "").trim().localeCompare((b.vendorName ?? "").trim(), "ko");
+    if (vendorCmp !== 0) return vendorCmp;
+    return (a.paymentDate ?? "").localeCompare(b.paymentDate ?? "", "ko");
+  });
 const todayYmd = () => {
   const now = new Date();
   const y = now.getFullYear();
@@ -1100,6 +1108,7 @@ const App = () => {
   const [evidenceSplitTotal, setEvidenceSplitTotal] = useState("");
   const [evidenceSplitBusy, setEvidenceSplitBusy] = useState(false);
   const [evidenceCostRegisteringId, setEvidenceCostRegisteringId] = useState<string | null>(null);
+  const [costSortByExpenseKind, setCostSortByExpenseKind] = useState(false);
   const [monthCommonTab, setMonthCommonTab] = useState<"cards" | "evidence" | "overall">("cards");
   const [monthCommonCollapsed, setMonthCommonCollapsed] = useState(true);
   const [storeDataCollapsed, setStoreDataCollapsed] = useState(true);
@@ -1292,9 +1301,15 @@ const App = () => {
   );
   const productRowsForDisplay = useMemo(() => [...(activeStore?.productSummaryRows ?? [])], [activeStore?.productSummaryRows]);
   const costRowsForDisplay = useMemo(
-    () => sortCostRows([...(activeStore?.costEntryRows ?? [])]),
-    [activeStore?.costEntryRows],
+    () =>
+      costSortByExpenseKind
+        ? sortCostRowsByExpenseKind([...(activeStore?.costEntryRows ?? [])])
+        : sortCostRows([...(activeStore?.costEntryRows ?? [])]),
+    [activeStore?.costEntryRows, costSortByExpenseKind],
   );
+  useEffect(() => {
+    if (storeDataTab !== "costs") setCostSortByExpenseKind(false);
+  }, [storeDataTab]);
   const pnlSummary = useMemo(() => {
     const salesRows = activeStore?.salesSummaryRows ?? [];
     const salesTotalSupply = Math.round(salesRows.reduce((sum, row) => sum + row.supplyAmount, 0));
@@ -3410,6 +3425,15 @@ const App = () => {
                           </span>
                         )}
                         <span className="sales-heading-grow" />
+                        <button
+                          type="button"
+                          className="btn-secondary"
+                          disabled={salesModalOpen || productModalOpen || costModalOpen || cardModalOpen || costEntryBusy}
+                          onClick={() => setCostSortByExpenseKind((prev) => !prev)}
+                        >
+                          {costSortByExpenseKind ? "정렬기준:기본" : "정렬기준:계정"}
+                        </button>
+                        <span aria-hidden={true}>{"\u00A0\u00A0"}</span>
                         <button
                           type="button"
                           className="btn-secondary"
