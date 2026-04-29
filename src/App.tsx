@@ -826,14 +826,6 @@ const sortCostRows = (rows: CostEntryRow[]): CostEntryRow[] => {
   const uploaded = rows.filter((r) => r.entryType !== "manual");
   return [...manual, ...uploaded];
 };
-const sortCostRowsByExpenseKind = (rows: CostEntryRow[]): CostEntryRow[] =>
-  [...rows].sort((a, b) => {
-    const kindCmp = (a.expenseKind ?? "").trim().localeCompare((b.expenseKind ?? "").trim(), "ko");
-    if (kindCmp !== 0) return kindCmp;
-    const vendorCmp = (a.vendorName ?? "").trim().localeCompare((b.vendorName ?? "").trim(), "ko");
-    if (vendorCmp !== 0) return vendorCmp;
-    return (a.paymentDate ?? "").localeCompare(b.paymentDate ?? "", "ko");
-  });
 const todayYmd = () => {
   const now = new Date();
   const y = now.getFullYear();
@@ -1086,6 +1078,7 @@ const App = () => {
   const [inventoryModalOpen, setInventoryModalOpen] = useState(false);
   const [inventoryDraft, setInventoryDraft] = useState<InventoryDraft>(() => emptyInventoryDraft());
   const [inventoryBusy, setInventoryBusy] = useState(false);
+  const [costSortByAccount, setCostSortByAccount] = useState(false);
   const [cardModalOpen, setCardModalOpen] = useState(false);
   const [cardModalPhase, setCardModalPhase] = useState<"pick" | "reading" | "ready" | "saving" | "error">("pick");
   const [cardModalProgress, setCardModalProgress] = useState("");
@@ -1108,7 +1101,6 @@ const App = () => {
   const [evidenceSplitTotal, setEvidenceSplitTotal] = useState("");
   const [evidenceSplitBusy, setEvidenceSplitBusy] = useState(false);
   const [evidenceCostRegisteringId, setEvidenceCostRegisteringId] = useState<string | null>(null);
-  const [costSortByExpenseKind, setCostSortByExpenseKind] = useState(false);
   const [monthCommonTab, setMonthCommonTab] = useState<"cards" | "evidence" | "overall">("cards");
   const [monthCommonCollapsed, setMonthCommonCollapsed] = useState(true);
   const [storeDataCollapsed, setStoreDataCollapsed] = useState(true);
@@ -1300,16 +1292,11 @@ const App = () => {
     [activeStore?.salesSummaryRows],
   );
   const productRowsForDisplay = useMemo(() => [...(activeStore?.productSummaryRows ?? [])], [activeStore?.productSummaryRows]);
-  const costRowsForDisplay = useMemo(
-    () =>
-      costSortByExpenseKind
-        ? sortCostRowsByExpenseKind([...(activeStore?.costEntryRows ?? [])])
-        : sortCostRows([...(activeStore?.costEntryRows ?? [])]),
-    [activeStore?.costEntryRows, costSortByExpenseKind],
-  );
-  useEffect(() => {
-    if (storeDataTab !== "costs") setCostSortByExpenseKind(false);
-  }, [storeDataTab]);
+  const costRowsForDisplay = useMemo(() => {
+    const baseRows = sortCostRows([...(activeStore?.costEntryRows ?? [])]);
+    if (!costSortByAccount) return baseRows;
+    return [...baseRows].sort((a, b) => a.expenseKind.localeCompare(b.expenseKind, "ko"));
+  }, [activeStore?.costEntryRows, costSortByAccount]);
   const pnlSummary = useMemo(() => {
     const salesRows = activeStore?.salesSummaryRows ?? [];
     const salesTotalSupply = Math.round(salesRows.reduce((sum, row) => sum + row.supplyAmount, 0));
@@ -2780,6 +2767,11 @@ const App = () => {
   const evidenceTabLoading =
     evidenceModalOpen && (evidenceModalPhase === "reading" || evidenceModalPhase === "saving");
 
+  useEffect(() => {
+    if (storeDataTab !== "costs") return;
+    setCostSortByAccount(false);
+  }, [storeDataTab, activeStoreId]);
+
   return (
     <main className="layout">
       <section className="panel">
@@ -3428,10 +3420,9 @@ const App = () => {
                         <button
                           type="button"
                           className="btn-secondary"
-                          disabled={salesModalOpen || productModalOpen || costModalOpen || cardModalOpen || costEntryBusy}
-                          onClick={() => setCostSortByExpenseKind((prev) => !prev)}
+                          onClick={() => setCostSortByAccount((prev) => !prev)}
                         >
-                          {costSortByExpenseKind ? "정렬기준:기본" : "정렬기준:계정"}
+                          {costSortByAccount ? "정렬기준:기본" : "정렬기준:계정"}
                         </button>
                         <span aria-hidden={true}>{"\u00A0\u00A0"}</span>
                         <button
