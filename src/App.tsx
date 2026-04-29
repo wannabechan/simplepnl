@@ -3420,14 +3420,6 @@ const App = () => {
                         <button
                           type="button"
                           className="btn-secondary"
-                          onClick={() => setCostSortByAccount((prev) => !prev)}
-                        >
-                          {costSortByAccount ? "정렬기준:기본" : "정렬기준:계정"}
-                        </button>
-                        <span aria-hidden={true}>{"\u00A0\u00A0"}</span>
-                        <button
-                          type="button"
-                          className="btn-secondary"
                           disabled={
                             salesModalOpen ||
                             productModalOpen ||
@@ -3662,6 +3654,14 @@ const App = () => {
                           </span>
                         )}
                         <span className="sales-heading-grow" />
+                        <button
+                          type="button"
+                          className="btn-secondary"
+                          onClick={() => setCostSortByAccount((prev) => !prev)}
+                        >
+                          {costSortByAccount ? "정렬기준:기본" : "정렬기준:계정"}
+                        </button>
+                        <span aria-hidden={true}>{"\u00A0\u00A0"}</span>
                         <button
                           type="button"
                           className="btn-secondary"
