@@ -53,6 +53,12 @@ interface CardHistoryRow {
   appliedStore?: string;
 }
 
+interface PnlAdjustmentRow {
+  id: string;
+  label: string;
+  supplyAmount: number;
+}
+
 interface EvidenceRow {
   id: string;
   date: string;
@@ -62,6 +68,7 @@ interface EvidenceRow {
   supplyAmount: number;
   taxAmount: number;
   evidenceType: "세금계산서" | "계산서" | "기타증빙";
+  expenseAccount?: string;
   appliedStore?: string;
 }
 
@@ -71,6 +78,8 @@ interface StoreRecord {
   salesSummaryRows?: SalesSummaryRow[];
   productSummaryRows?: ProductSummaryRow[];
   costEntryRows?: CostEntryRow[];
+  pnlRevenueAdjustments?: PnlAdjustmentRow[];
+  pnlCostAdjustments?: PnlAdjustmentRow[];
   menuInventory?: number;
   beverageInventory?: number;
 }
@@ -493,6 +502,7 @@ const parseEvidenceFile = async (
           supplyAmount,
           taxAmount,
           evidenceType: kind,
+          expenseAccount: "",
           appliedStore: "",
         };
       }
@@ -513,6 +523,7 @@ const parseEvidenceFile = async (
         supplyAmount,
         taxAmount,
         evidenceType: kind,
+        expenseAccount: "",
         appliedStore: "",
       };
     })
@@ -586,7 +597,12 @@ const normalizeCostEntryRow = (raw: Partial<CostEntryRow>): CostEntryRow => ({
   vat: toNumber(raw.vat),
   taxMode: typeof raw.taxMode === "string" ? raw.taxMode : String(raw.taxMode ?? ""),
   payStatus: typeof raw.payStatus === "string" ? raw.payStatus : String(raw.payStatus ?? ""),
-  memo: typeof raw.memo === "string" ? raw.memo : String(raw.memo ?? ""),
+  memo:
+    typeof raw.memo === "string"
+      ? raw.memo.startsWith("증빙자동등록")
+        ? "증빙등록"
+        : raw.memo
+      : String(raw.memo ?? ""),
   entryType: raw.entryType === "manual" ? "manual" : "upload",
   manualOrder: typeof raw.manualOrder === "number" && Number.isFinite(raw.manualOrder) ? raw.manualOrder : 0,
 });
@@ -616,7 +632,14 @@ const normalizeEvidenceRow = (raw: Partial<EvidenceRow>): EvidenceRow => ({
   taxAmount: toNumber(raw.taxAmount),
   evidenceType:
     raw.evidenceType === "계산서" || raw.evidenceType === "기타증빙" ? raw.evidenceType : "세금계산서",
+  expenseAccount: typeof raw.expenseAccount === "string" ? raw.expenseAccount : String(raw.expenseAccount ?? ""),
   appliedStore: typeof raw.appliedStore === "string" ? raw.appliedStore : String(raw.appliedStore ?? ""),
+});
+
+const normalizePnlAdjustmentRow = (raw: Partial<PnlAdjustmentRow>): PnlAdjustmentRow => ({
+  id: typeof raw.id === "string" ? raw.id : nowId(),
+  label: typeof raw.label === "string" ? raw.label : String(raw.label ?? ""),
+  supplyAmount: toNumber(raw.supplyAmount),
 });
 
 const EVIDENCE_TYPE_ORDER: Record<EvidenceRow["evidenceType"], number> = {
@@ -653,7 +676,7 @@ const calcEvidenceSplit = (type: EvidenceRow["evidenceType"], totalRaw: string) 
     const supplyAmount = Math.round(total / 1.1);
     return { totalAmount: total, supplyAmount, taxAmount: total - supplyAmount };
   }
-  return { totalAmount: total, supplyAmount: 0, taxAmount: 0 };
+  return { totalAmount: total, supplyAmount: total, taxAmount: 0 };
 };
 
 const normalizeStore = (raw: unknown): StoreRecord => {
@@ -670,12 +693,22 @@ const normalizeStore = (raw: unknown): StoreRecord => {
   if (Array.isArray(s.costEntryRows)) {
     costEntryRows = (s.costEntryRows as Partial<CostEntryRow>[]).map(normalizeCostEntryRow);
   }
+  let pnlRevenueAdjustments: PnlAdjustmentRow[] | undefined;
+  if (Array.isArray(s.pnlRevenueAdjustments)) {
+    pnlRevenueAdjustments = (s.pnlRevenueAdjustments as Partial<PnlAdjustmentRow>[]).map(normalizePnlAdjustmentRow);
+  }
+  let pnlCostAdjustments: PnlAdjustmentRow[] | undefined;
+  if (Array.isArray(s.pnlCostAdjustments)) {
+    pnlCostAdjustments = (s.pnlCostAdjustments as Partial<PnlAdjustmentRow>[]).map(normalizePnlAdjustmentRow);
+  }
   return {
     id: typeof s.id === "string" ? s.id : nowId(),
     name: typeof s.name === "string" ? s.name : "",
     salesSummaryRows,
     productSummaryRows,
     costEntryRows,
+    pnlRevenueAdjustments,
+    pnlCostAdjustments,
     menuInventory: toNumber(s.menuInventory),
     beverageInventory: toNumber(s.beverageInventory),
   };
@@ -731,6 +764,8 @@ const mergeStructureWithSalesFromServer = (
   const salesByStoreId = new Map<string, SalesSummaryRow[] | undefined>();
   const productsByStoreId = new Map<string, ProductSummaryRow[] | undefined>();
   const costsByStoreId = new Map<string, CostEntryRow[] | undefined>();
+  const pnlRevenueAdjustmentsByStoreId = new Map<string, PnlAdjustmentRow[] | undefined>();
+  const pnlCostAdjustmentsByStoreId = new Map<string, PnlAdjustmentRow[] | undefined>();
   const menuInventoryByStoreId = new Map<string, number | undefined>();
   const beverageInventoryByStoreId = new Map<string, number | undefined>();
   const cardRowsByMonthId = new Map<string, CardHistoryRow[] | undefined>();
@@ -742,6 +777,8 @@ const mergeStructureWithSalesFromServer = (
       salesByStoreId.set(s.id, s.salesSummaryRows);
       productsByStoreId.set(s.id, s.productSummaryRows);
       costsByStoreId.set(s.id, s.costEntryRows);
+      pnlRevenueAdjustmentsByStoreId.set(s.id, s.pnlRevenueAdjustments);
+      pnlCostAdjustmentsByStoreId.set(s.id, s.pnlCostAdjustments);
       menuInventoryByStoreId.set(s.id, s.menuInventory);
       beverageInventoryByStoreId.set(s.id, s.beverageInventory);
     }
@@ -757,6 +794,8 @@ const mergeStructureWithSalesFromServer = (
       salesSummaryRows: salesByStoreId.get(s.id),
       productSummaryRows: productsByStoreId.get(s.id),
       costEntryRows: costsByStoreId.get(s.id),
+      pnlRevenueAdjustments: pnlRevenueAdjustmentsByStoreId.get(s.id),
+      pnlCostAdjustments: pnlCostAdjustmentsByStoreId.get(s.id),
       menuInventory: menuInventoryByStoreId.get(s.id),
       beverageInventory: beverageInventoryByStoreId.get(s.id),
     })),
@@ -790,6 +829,16 @@ const todayYmd = () => {
   const d = String(now.getDate()).padStart(2, "0");
   return `${y}-${m}-${d}`;
 };
+
+const displayDateYmd = (value: string): string => {
+  const v = value.trim();
+  const m = v.match(/^(\d{4}-\d{2}-\d{2})/);
+  if (m?.[1]) return m[1];
+  const compact = v.match(/^(\d{4})(\d{2})(\d{2})$/);
+  if (compact) return `${compact[1]}-${compact[2]}-${compact[3]}`;
+  return v;
+};
+
 const COST_ACCOUNT_OPTIONS = [
   "광고홍보",
   "교통비",
@@ -812,6 +861,120 @@ const COST_ACCOUNT_OPTIONS = [
   "saas",
   "_기타",
 ] as const;
+
+const levenshteinDistance = (a: string, b: string): number => {
+  const m = a.length;
+  const n = b.length;
+  if (m === 0) return n;
+  if (n === 0) return m;
+  const dp = new Array<number>(n + 1);
+  for (let j = 0; j <= n; j++) dp[j] = j;
+  for (let i = 1; i <= m; i++) {
+    let prev = dp[0]!;
+    dp[0] = i;
+    for (let j = 1; j <= n; j++) {
+      const cur = dp[j]!;
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      dp[j] = Math.min(dp[j]! + 1, dp[j - 1]! + 1, prev + cost);
+      prev = cur;
+    }
+  }
+  return dp[n]!;
+};
+
+/** 0~1, 1에 가까울수록 유사 (편집 거리 기반) */
+const vendorNameSimilarity = (a: string, b: string): number => {
+  if (a === b) return 1;
+  if (!a || !b) return 0;
+  const d = levenshteinDistance(a, b);
+  const maxLen = Math.max(a.length, b.length);
+  return 1 - d / maxLen;
+};
+
+/** 두 문자열의 공통 "연속" 부분 문자열 최대 길이 */
+const longestCommonSubstringLength = (a: string, b: string): number => {
+  if (!a || !b) return 0;
+  const m = a.length;
+  const n = b.length;
+  const dp = Array.from({ length: m + 1 }, () => new Array<number>(n + 1).fill(0));
+  let best = 0;
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      if (a[i - 1] === b[j - 1]) {
+        dp[i]![j] = dp[i - 1]![j - 1]! + 1;
+        if (dp[i]![j]! > best) best = dp[i]![j]!;
+      } else {
+        dp[i]![j] = 0;
+      }
+    }
+  }
+  return best;
+};
+
+/** 업체명 조건: 90% 유사 OR 동일 연속 문자열 3자 이상 */
+const vendorNameMatches = (evidenceVendor: string, costVendor: string): { matched: boolean; similarity: number } => {
+  const a = evidenceVendor.trim();
+  const b = costVendor.trim();
+  const similarity = vendorNameSimilarity(a, b);
+  if (similarity >= 0.9) return { matched: true, similarity };
+  const na = normalize(a);
+  const nb = normalize(b);
+  const commonLen = longestCommonSubstringLength(na, nb);
+  return { matched: commonLen >= 3, similarity };
+};
+
+const supplyAmountSimilarEnough = (a: number, b: number, minRatio: number): boolean => {
+  const ar = Math.round(Number(a));
+  const br = Math.round(Number(b));
+  const absa = Math.abs(ar);
+  const absb = Math.abs(br);
+  const hi = Math.max(absa, absb);
+  const lo = Math.min(absa, absb);
+  if (hi === 0) return ar === br;
+  return lo / hi >= minRatio;
+};
+
+const findBestCostRowMatch = (
+  evidenceVendor: string,
+  evidenceSupply: number,
+  costRows: CostEntryRow[],
+): { row: CostEntryRow; vSim: number; amtRatio: number } | null => {
+  const evTrim = evidenceVendor.trim();
+  let best: { row: CostEntryRow; vSim: number; amtRatio: number } | null = null;
+  for (const c of costRows) {
+    const vendorMatch = vendorNameMatches(evTrim, (c.vendorName ?? "").trim());
+    if (!vendorMatch.matched) continue;
+    if (!supplyAmountSimilarEnough(evidenceSupply, c.supplyAmount, 0.97)) continue;
+    const ar = Math.round(evidenceSupply);
+    const br = Math.round(c.supplyAmount);
+    const hi = Math.max(Math.abs(ar), Math.abs(br), 1);
+    const lo = Math.min(Math.abs(ar), Math.abs(br));
+    const amtRatio = lo / hi;
+    if (
+      !best ||
+      vendorMatch.similarity > best.vSim ||
+      (Math.abs(vendorMatch.similarity - best.vSim) < 1e-9 && amtRatio > best.amtRatio)
+    ) {
+      best = { row: c, vSim: vendorMatch.similarity, amtRatio };
+    }
+  }
+  return best;
+};
+
+/** 비용 등록 행 중 업체명·공급가액 조건을 만족하는 항목의 비용계정(expenseKind) */
+const matchExpenseAccountFromCostRows = (
+  evidenceVendor: string,
+  evidenceSupply: number,
+  costRows: CostEntryRow[],
+): string | null => {
+  const allowed = COST_ACCOUNT_OPTIONS as readonly string[];
+  const matched = findBestCostRowMatch(evidenceVendor, evidenceSupply, costRows);
+  if (!matched) return null;
+  const kind = (matched.row.expenseKind ?? "").trim();
+  if (!kind || !allowed.includes(kind)) return null;
+  return kind;
+};
+
 const calcSupplyAndVat = (totalAmountRaw: string, taxModeRaw: string) => {
   const total = toNumber(totalAmountRaw);
   const roundedTotal = Math.round(total);
@@ -932,8 +1095,11 @@ const App = () => {
   const [evidenceSplitRowId, setEvidenceSplitRowId] = useState<string | null>(null);
   const [evidenceSplitTotal, setEvidenceSplitTotal] = useState("");
   const [evidenceSplitBusy, setEvidenceSplitBusy] = useState(false);
-  const [monthCommonTab, setMonthCommonTab] = useState<"cards" | "evidence">("cards");
-  const [monthCommonCollapsed, setMonthCommonCollapsed] = useState(false);
+  const [evidenceCostRegisteringId, setEvidenceCostRegisteringId] = useState<string | null>(null);
+  const [monthCommonTab, setMonthCommonTab] = useState<"cards" | "evidence" | "overall">("cards");
+  const [monthCommonCollapsed, setMonthCommonCollapsed] = useState(true);
+  const [storeDataCollapsed, setStoreDataCollapsed] = useState(true);
+  const [storePnlCollapsed, setStorePnlCollapsed] = useState(true);
   /** 상품 요약 업로드 모달 (매출 요약과 동일 단계) */
   const [productModalOpen, setProductModalOpen] = useState(false);
   const [productModalPhase, setProductModalPhase] = useState<"pick" | "reading" | "ready" | "saving" | "error">("pick");
@@ -955,6 +1121,14 @@ const App = () => {
   const [costEntryBusy, setCostEntryBusy] = useState(false);
   /** 매장별 데이터 패널 탭 */
   const [storeDataTab, setStoreDataTab] = useState<"sales" | "products" | "costs">("sales");
+  const [pnlRevenueAdjustmentLabel, setPnlRevenueAdjustmentLabel] = useState("");
+  const [pnlRevenueAdjustmentAmount, setPnlRevenueAdjustmentAmount] = useState("0");
+  const [pnlCostAdjustmentLabel, setPnlCostAdjustmentLabel] = useState("");
+  const [pnlCostAdjustmentAmount, setPnlCostAdjustmentAmount] = useState("0");
+  const [pnlAdjustmentSaveBusy, setPnlAdjustmentSaveBusy] = useState(false);
+  const [pnlAdjustmentMessage, setPnlAdjustmentMessage] = useState("");
+  const [pnlAdjustmentMessageType, setPnlAdjustmentMessageType] = useState<"ok" | "error" | "">("");
+  const pnlDefaultAppliedStoreIdsRef = useRef<Set<string>>(new Set());
   /** 첫 loadState 완료 여부 (로컬/배포 최초 접속 로딩) */
   const [remoteDataReady, setRemoteDataReady] = useState(false);
   /** 월·매장 저장(서버 병합) 진행 중 */
@@ -1117,6 +1291,283 @@ const App = () => {
     () => sortCostRows([...(activeStore?.costEntryRows ?? [])]),
     [activeStore?.costEntryRows],
   );
+  const pnlSummary = useMemo(() => {
+    const salesRows = activeStore?.salesSummaryRows ?? [];
+    const salesTotalSupply = Math.round(salesRows.reduce((sum, row) => sum + row.supplyAmount, 0));
+    const salesByPaymentMethod = Array.from(
+      salesRows.reduce((map, row) => {
+        const key = row.paymentMethod.trim() || "미분류";
+        map.set(key, (map.get(key) ?? 0) + row.supplyAmount);
+        return map;
+      }, new Map<string, number>()),
+    )
+      .map(([label, amount]) => ({ label, amount: Math.round(amount) }))
+      .sort((a, b) => b.amount - a.amount || a.label.localeCompare(b.label, "ko"));
+
+    const costRows = activeStore?.costEntryRows ?? [];
+    const directCostTotalSupply = Math.round(costRows.reduce((sum, row) => sum + row.supplyAmount, 0));
+    const activeStoreName = activeStore?.name ?? "";
+    const cardRowsForStore = (activeMonth?.cardHistoryRows ?? []).filter(
+      (row) => normalize(row.appliedStore ?? "") === normalize(activeStoreName),
+    );
+    const cardCostTotalSupply = Math.round(
+      cardRowsForStore.reduce((sum, row) => sum + Math.round(row.approvalAmount / 1.1), 0),
+    );
+    const costTotalSupply = directCostTotalSupply + cardCostTotalSupply;
+    const costByAccountMap = costRows.reduce((map, row) => {
+      const key = row.expenseKind.trim() || "미분류";
+      map.set(key, (map.get(key) ?? 0) + row.supplyAmount);
+      return map;
+    }, new Map<string, number>());
+    for (const row of cardRowsForStore) {
+      const key = (row.expenseAccount ?? "").trim() || "미분류";
+      const supplyAmount = Math.round(row.approvalAmount / 1.1);
+      costByAccountMap.set(key, (costByAccountMap.get(key) ?? 0) + supplyAmount);
+    }
+    const normalizedCostByAccount = Array.from(costByAccountMap.entries())
+      .map(([label, amount]) => ({ label, amount: Math.round(amount) }))
+      .sort((a, b) => b.amount - a.amount || a.label.localeCompare(b.label, "ko"));
+
+    const profitSupply = salesTotalSupply - costTotalSupply;
+    const revenueAdjustments = [...(activeStore?.pnlRevenueAdjustments ?? [])];
+    const costAdjustments = [...(activeStore?.pnlCostAdjustments ?? [])];
+    const revenueAdjustmentTotal = Math.round(
+      revenueAdjustments.reduce((sum, row) => sum + row.supplyAmount, 0),
+    );
+    const costAdjustmentTotal = Math.round(
+      costAdjustments.reduce((sum, row) => sum + row.supplyAmount, 0),
+    );
+    const finalRevenueSupply = salesTotalSupply + revenueAdjustmentTotal;
+    const finalCostSupply = costTotalSupply + costAdjustmentTotal;
+    const finalProfitSupply = finalRevenueSupply - finalCostSupply;
+    const costRowsByStore = activeStore?.costEntryRows ?? [];
+    const sumStoreCostByKind = (...kinds: string[]) =>
+      Math.round(
+        costRowsByStore
+          .filter((row) => kinds.some((kind) => normalize(row.expenseKind) === normalize(kind)))
+          .reduce((sum, row) => sum + row.supplyAmount, 0),
+      );
+    const sumCardCostByAccount = (...accounts: string[]) =>
+      Math.round(
+        cardRowsForStore
+          .filter((row) => accounts.some((account) => normalize(row.expenseAccount ?? "") === normalize(account)))
+          .reduce((sum, row) => sum + Math.round(row.approvalAmount / 1.1), 0),
+      );
+
+    const activeMonthIndex = activeMonth ? months.findIndex((m) => m.id === activeMonth.id) : -1;
+    const previousMonth = activeMonthIndex > 0 ? months[activeMonthIndex - 1] : null;
+    const previousStore =
+      previousMonth?.stores.find((store) => normalize(store.name) === normalize(activeStore?.name ?? "")) ?? null;
+    const previousMenuInventory = Math.round(previousStore?.menuInventory ?? 0);
+    const previousBeverageInventory = Math.round(previousStore?.beverageInventory ?? 0);
+    const currentMenuInventory = Math.round(activeStore?.menuInventory ?? 0);
+    const currentBeverageInventory = Math.round(activeStore?.beverageInventory ?? 0);
+
+    const menuCostSum =
+      sumStoreCostByKind("식자재") + sumCardCostByAccount("식자재") - currentMenuInventory + previousMenuInventory;
+    const beverageAlcoholCostSum =
+      sumStoreCostByKind("음료", "주류") +
+      sumCardCostByAccount("음료", "주류") -
+      currentBeverageInventory +
+      previousBeverageInventory;
+    const laborCostSum = sumStoreCostByKind("인건비") + sumCardCostByAccount("인건비");
+    const occupancyMgmtCostSum = sumStoreCostByKind("임관리비") + sumCardCostByAccount("임관리비");
+    const productRows = activeStore?.productSummaryRows ?? [];
+    const menuSalesSupply = Math.round(
+      productRows
+        .filter((row) => normalize(row.division ?? "") === normalize("메뉴"))
+        .reduce((sum, row) => sum + Math.round(row.totalSales / 1.1), 0),
+    );
+    const beverageAlcoholSalesSupply = Math.round(
+      productRows
+        .filter((row) => normalize(row.division ?? "") === normalize("음료주류"))
+        .reduce((sum, row) => sum + Math.round(row.totalSales / 1.1), 0),
+    );
+
+    return {
+      salesTotalSupply,
+      salesByPaymentMethod,
+      costTotalSupply,
+      normalizedCostByAccount,
+      directCostTotalSupply,
+      cardCostTotalSupply,
+      profitSupply,
+      revenueAdjustments,
+      costAdjustments,
+      revenueAdjustmentTotal,
+      costAdjustmentTotal,
+      finalRevenueSupply,
+      finalCostSupply,
+      finalProfitSupply,
+      menuCostSum,
+      beverageAlcoholCostSum,
+      laborCostSum,
+      occupancyMgmtCostSum,
+      menuSalesSupply,
+      beverageAlcoholSalesSupply,
+    };
+  }, [activeStore, activeMonth, months]);
+  const formatSalesRatio = useCallback(
+    (amount: number) => (pnlSummary.salesTotalSupply > 0 ? `${((amount / pnlSummary.salesTotalSupply) * 100).toFixed(1)}%` : "-"),
+    [pnlSummary.salesTotalSupply],
+  );
+  const keyMetricSalesBase = pnlSummary.salesTotalSupply + pnlSummary.revenueAdjustmentTotal;
+  const formatKeyMetricRatio = useCallback(
+    (amount: number) => (keyMetricSalesBase > 0 ? `${((amount / keyMetricSalesBase) * 100).toFixed(1)}%` : "-"),
+    [keyMetricSalesBase],
+  );
+  const formatRatio = useCallback(
+    (numerator: number, denominator: number) => (denominator > 0 ? `${((numerator / denominator) * 100).toFixed(1)}%` : "-"),
+    [],
+  );
+  const monthOverallSummary = useMemo(() => {
+    if (!activeMonth) {
+      return { rows: [] as Array<{ storeId: string; storeName: string; sales: number; profit: number }>, salesTotal: 0, profitTotal: 0 };
+    }
+    const rows = activeMonth.stores.map((store) => {
+      const baseSales = Math.round((store.salesSummaryRows ?? []).reduce((sum, row) => sum + row.supplyAmount, 0));
+      const cardCost = Math.round(
+        (activeMonth.cardHistoryRows ?? [])
+          .filter((row) => normalize(row.appliedStore ?? "") === normalize(store.name))
+          .reduce((sum, row) => sum + Math.round(row.approvalAmount / 1.1), 0),
+      );
+      const directCost = Math.round((store.costEntryRows ?? []).reduce((sum, row) => sum + row.supplyAmount, 0));
+      const revenueAdjustments = Math.round(
+        (store.pnlRevenueAdjustments ?? []).reduce((sum, row) => sum + row.supplyAmount, 0),
+      );
+      const costAdjustments = Math.round(
+        (store.pnlCostAdjustments ?? []).reduce((sum, row) => sum + row.supplyAmount, 0),
+      );
+      const sales = baseSales + revenueAdjustments;
+      const profit = sales - (directCost + cardCost + costAdjustments);
+      return { storeId: store.id, storeName: store.name, sales, profit };
+    });
+    const salesTotal = Math.round(rows.reduce((sum, row) => sum + row.sales, 0));
+    const profitTotal = Math.round(rows.reduce((sum, row) => sum + row.profit, 0));
+    return { rows, salesTotal, profitTotal };
+  }, [activeMonth, months]);
+  const persistPnlAdjustments = async (
+    revenueRows: PnlAdjustmentRow[],
+    costRows: PnlAdjustmentRow[],
+  ): Promise<{ ok: true } | { ok: false; message: string }> => {
+    if (!activeMonthId || !activeStoreId) {
+      return { ok: false, message: "월 또는 매장이 선택되지 않았습니다." };
+    }
+    const next = monthsRef.current.map((month) => {
+      if (month.id !== activeMonthId) return month;
+      return {
+        ...month,
+        stores: month.stores.map((store) =>
+          store.id === activeStoreId
+            ? { ...store, pnlRevenueAdjustments: revenueRows, pnlCostAdjustments: costRows }
+            : store,
+        ),
+      };
+    });
+    monthsRef.current = next;
+    setMonths(next);
+    setSyncError("");
+    try {
+      await saveState(next);
+      return { ok: true };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown save error";
+      setSyncError(message);
+      return { ok: false, message };
+    }
+  };
+
+  const addPnlAdjustment = async (kind: "revenue" | "cost") => {
+    if (!activeStore) return;
+    const label = (kind === "revenue" ? pnlRevenueAdjustmentLabel : pnlCostAdjustmentLabel).trim();
+    const amountRaw = kind === "revenue" ? pnlRevenueAdjustmentAmount : pnlCostAdjustmentAmount;
+    const amount = Math.round(toNumber(amountRaw));
+    if (!label) {
+      setPnlAdjustmentMessage("항목명을 입력해 주세요.");
+      setPnlAdjustmentMessageType("error");
+      return;
+    }
+    if (amount === 0) {
+      setPnlAdjustmentMessage("금액은 0을 제외한 값으로 입력해 주세요.");
+      setPnlAdjustmentMessageType("error");
+      return;
+    }
+    const nextRevenue = [...(activeStore.pnlRevenueAdjustments ?? [])];
+    const nextCost = [...(activeStore.pnlCostAdjustments ?? [])];
+    const row: PnlAdjustmentRow = { id: nowId(), label, supplyAmount: amount };
+    if (kind === "revenue") nextRevenue.push(row);
+    else nextCost.push(row);
+    setPnlAdjustmentSaveBusy(true);
+    setPnlAdjustmentMessage("");
+    setPnlAdjustmentMessageType("");
+    const result = await persistPnlAdjustments(nextRevenue, nextCost);
+    setPnlAdjustmentSaveBusy(false);
+    if (!result.ok) {
+      setPnlAdjustmentMessage(result.message);
+      setPnlAdjustmentMessageType("error");
+      return;
+    }
+    if (kind === "revenue") {
+      setPnlRevenueAdjustmentLabel("");
+      setPnlRevenueAdjustmentAmount("0");
+    } else {
+      setPnlCostAdjustmentLabel("");
+      setPnlCostAdjustmentAmount("0");
+    }
+  };
+
+  const removePnlAdjustment = async (kind: "revenue" | "cost", id: string) => {
+    if (!activeStore) return;
+    const nextRevenue = (activeStore.pnlRevenueAdjustments ?? []).filter((row) => !(kind === "revenue" && row.id === id));
+    const nextCost = (activeStore.pnlCostAdjustments ?? []).filter((row) => !(kind === "cost" && row.id === id));
+    setPnlAdjustmentSaveBusy(true);
+    setPnlAdjustmentMessage("");
+    setPnlAdjustmentMessageType("");
+    const result = await persistPnlAdjustments(nextRevenue, nextCost);
+    setPnlAdjustmentSaveBusy(false);
+    if (!result.ok) {
+      setPnlAdjustmentMessage(result.message);
+      setPnlAdjustmentMessageType("error");
+      return;
+    }
+  };
+  useEffect(() => {
+    if (!activeStoreId || !activeStore) return;
+    if (pnlDefaultAppliedStoreIdsRef.current.has(activeStoreId)) return;
+    const hasDefault = (activeStore.pnlCostAdjustments ?? []).some(
+      (row) => normalize(row.label) === normalize("카드수수료"),
+    );
+    if (hasDefault) {
+      pnlDefaultAppliedStoreIdsRef.current.add(activeStoreId);
+      return;
+    }
+    const cardSalesSupply = Math.round(
+      (activeStore.salesSummaryRows ?? [])
+        .filter((row) => normalize(row.paymentMethod) === normalize("카드"))
+        .reduce((sum, row) => sum + row.supplyAmount, 0),
+    );
+    const defaultFee = Math.round(cardSalesSupply * 0.027);
+    if (defaultFee <= 0) {
+      pnlDefaultAppliedStoreIdsRef.current.add(activeStoreId);
+      return;
+    }
+    pnlDefaultAppliedStoreIdsRef.current.add(activeStoreId);
+    const run = async () => {
+      const nextRevenue = [...(activeStore.pnlRevenueAdjustments ?? [])];
+      const nextCost = [
+        ...(activeStore.pnlCostAdjustments ?? []),
+        { id: nowId(), label: "카드수수료", supplyAmount: defaultFee },
+      ];
+      const result = await persistPnlAdjustments(nextRevenue, nextCost);
+      if (!result.ok) {
+        pnlDefaultAppliedStoreIdsRef.current.delete(activeStoreId);
+        setPnlAdjustmentMessage(result.message);
+        setPnlAdjustmentMessageType("error");
+        return;
+      }
+    };
+    void run();
+  }, [activeStoreId, activeStore, persistPnlAdjustments]);
 
   const persistProductRows = async (
     rows: ProductSummaryRow[],
@@ -1378,6 +1829,42 @@ const App = () => {
     monthsRef.current = next;
     setMonths(next);
   };
+
+  useEffect(() => {
+    if (!activeMonthId) return;
+    const month = months.find((m) => m.id === activeMonthId);
+    if (!month?.evidenceRows?.length) return;
+
+    const nextById = new Map<string, string>();
+    for (const ev of month.evidenceRows) {
+      if ((ev.expenseAccount ?? "").trim()) continue;
+      const storeName = (ev.appliedStore ?? "").trim();
+      if (!storeName) continue;
+      const store = month.stores.find((s) => normalize(s.name) === normalize(storeName));
+      if (!store?.costEntryRows?.length) continue;
+      const matched = matchExpenseAccountFromCostRows(ev.vendorName, ev.supplyAmount, store.costEntryRows);
+      if (matched) nextById.set(ev.id, matched);
+    }
+    if (nextById.size === 0) return;
+
+    setMonths((prev) => {
+      const monthIdx = prev.findIndex((m) => m.id === activeMonthId);
+      if (monthIdx < 0) return prev;
+      const m = prev[monthIdx]!;
+      const rows = m.evidenceRows ?? [];
+      let changed = false;
+      const out = rows.map((r) => {
+        const n = nextById.get(r.id);
+        if (n === undefined) return r;
+        if ((r.expenseAccount ?? "").trim()) return r;
+        if (r.expenseAccount === n) return r;
+        changed = true;
+        return { ...r, expenseAccount: n };
+      });
+      if (!changed) return prev;
+      return prev.map((mo, i) => (i === monthIdx ? { ...mo, evidenceRows: out } : mo));
+    });
+  }, [months, activeMonthId]);
 
   const resetSalesModal = useCallback(() => {
     setSalesModalOpen(false);
@@ -2089,6 +2576,96 @@ const App = () => {
     updateEvidenceRowsLocal((rows) => rows.map((r) => (r.id === rowId ? { ...r, appliedStore } : r)));
   };
 
+  const onEvidenceRowExpenseAccountChange = (rowId: string, expenseAccount: string) => {
+    updateEvidenceRowsLocal((rows) => rows.map((r) => (r.id === rowId ? { ...r, expenseAccount } : r)));
+  };
+
+  const onEvidenceRegisterCost = async (row: EvidenceRow) => {
+    if (!activeMonthId) return;
+    const storeName = (row.appliedStore ?? "").trim();
+    if (!storeName) {
+      window.alert("먼저 적용매장을 선택해 주세요.");
+      return;
+    }
+    const month = monthsRef.current.find((m) => m.id === activeMonthId);
+    if (!month) return;
+    const store = month.stores.find((s) => normalize(s.name) === normalize(storeName));
+    if (!store) {
+      window.alert("적용매장과 일치하는 매장을 찾을 수 없습니다.");
+      return;
+    }
+    const existing = [...(store.costEntryRows ?? [])];
+    const duplicated = findBestCostRowMatch(row.vendorName, row.supplyAmount, existing);
+    if (duplicated) {
+      window.alert("이미 동일한 건으로 의심되는 비용 항목이 존재하여 등록을 중단합니다.");
+      return;
+    }
+    const expenseKind = (row.expenseAccount ?? "").trim();
+    if (!expenseKind) {
+      window.alert("비용계정을 먼저 선택해 주세요.");
+      return;
+    }
+    const allowed = COST_ACCOUNT_OPTIONS as readonly string[];
+    if (!allowed.includes(expenseKind)) {
+      window.alert("유효한 비용계정을 선택해 주세요.");
+      return;
+    }
+
+    setEvidenceCostRegisteringId(row.id);
+    const manualOrder =
+      existing
+        .filter((r) => r.entryType === "manual")
+        .reduce((max, r) => Math.max(max, r.manualOrder ?? 0), 0) + 1;
+    const supplyAmount = Math.round(toNumber(row.supplyAmount));
+    const totalAmount = Math.round(toNumber(row.totalAmount));
+    const vat = Math.round(toNumber(row.taxAmount));
+    const nextCostRows = sortCostRows([
+      {
+        id: nowId(),
+        paymentDate: formatBusinessDay(row.date),
+        expenseKind,
+        vendorName: row.vendorName.trim(),
+        totalAmount,
+        supplyAmount,
+        vat,
+        taxMode: vat > 0 ? "과세" : "비과세",
+        payStatus: "결제",
+        memo: "증빙등록",
+        entryType: "manual",
+        manualOrder,
+      },
+      ...existing,
+    ]);
+
+    const next = monthsRef.current.map((m) => {
+      if (m.id !== activeMonthId) return m;
+      return {
+        ...m,
+        stores: m.stores.map((s) => (s.id === store.id ? { ...s, costEntryRows: nextCostRows } : s)),
+      };
+    });
+    monthsRef.current = next;
+    setMonths(next);
+    setSyncError("");
+    try {
+      await saveState(next);
+      setEvidenceTableSaveMessage("비용 등록 완료");
+      setEvidenceTableSaveMessageType("ok");
+      window.setTimeout(() => {
+        setEvidenceTableSaveMessage("");
+        setEvidenceTableSaveMessageType("");
+      }, 2000);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown save error";
+      setSyncError(message);
+      setEvidenceTableSaveMessage(`비용 등록 실패: ${message}`);
+      setEvidenceTableSaveMessageType("error");
+      window.alert(message);
+    } finally {
+      setEvidenceCostRegisteringId(null);
+    }
+  };
+
   const onEvidenceTableSave = async () => {
     if (!activeMonth) return;
     setEvidenceTableSaveBusy(true);
@@ -2343,6 +2920,17 @@ const App = () => {
                   >
                     증빙 내역
                   </button>
+                  <button
+                    type="button"
+                    id="month-tab-overall"
+                    role="tab"
+                    aria-selected={monthCommonTab === "overall"}
+                    aria-controls="month-panel-overall"
+                    className={`tab-trigger${monthCommonTab === "overall" ? " tab-trigger-active" : ""}`}
+                    onClick={() => setMonthCommonTab("overall")}
+                  >
+                    전체 결과
+                  </button>
                 </div>
                 <div
                   id="month-panel-cards"
@@ -2505,20 +3093,36 @@ const App = () => {
                               <th>공급가액</th>
                               <th>세액</th>
                               <th>증빙구분</th>
+                              <th>비용계정</th>
                               <th>적용매장</th>
                               <th>분리</th>
+                              <th>비용등록</th>
                             </tr>
                           </thead>
                           <tbody>
                             {evidenceRowsForDisplay.map((row) => (
                               <tr key={row.id}>
-                                <td>{row.date}</td>
+                                <td>{displayDateYmd(row.date)}</td>
                                 <td>{row.approvalNumber}</td>
                                 <td>{row.vendorName}</td>
                                 <td>{money.format(Math.round(row.totalAmount))}</td>
                                 <td>{money.format(Math.round(row.supplyAmount))}</td>
                                 <td>{money.format(Math.round(row.taxAmount))}</td>
                                 <td>{row.evidenceType}</td>
+                                <td>
+                                  <select
+                                    className={`card-table-select${!(row.expenseAccount ?? "").trim() ? " card-table-select-missing" : ""}`}
+                                    value={row.expenseAccount ?? ""}
+                                    onChange={(e) => onEvidenceRowExpenseAccountChange(row.id, e.target.value)}
+                                  >
+                                    <option value="">선택</option>
+                                    {COST_ACCOUNT_OPTIONS.map((opt) => (
+                                      <option key={opt} value={opt}>
+                                        {opt}
+                                      </option>
+                                    ))}
+                                  </select>
+                                </td>
                                 <td>
                                   <select
                                     className={`card-table-select${!(row.appliedStore ?? "").trim() ? " card-table-select-missing" : ""}`}
@@ -2537,6 +3141,30 @@ const App = () => {
                                   <button type="button" className="btn-secondary btn-xs" onClick={() => openEvidenceSplitModal(row)}>
                                     분리
                                   </button>
+                                </td>
+                                <td>
+                                  {(() => {
+                                    const storeName = (row.appliedStore ?? "").trim();
+                                    const targetStore = activeMonth?.stores.find(
+                                      (s) => normalize(s.name) === normalize(storeName),
+                                    );
+                                    const hasMatched = !!findBestCostRowMatch(
+                                      row.vendorName,
+                                      row.supplyAmount,
+                                      targetStore?.costEntryRows ?? [],
+                                    );
+                                    if (!storeName || hasMatched) return null;
+                                    return (
+                                      <button
+                                        type="button"
+                                        className="btn-save btn-xs"
+                                        disabled={evidenceCostRegisteringId === row.id}
+                                        onClick={() => void onEvidenceRegisterCost(row)}
+                                      >
+                                        {evidenceCostRegisteringId === row.id ? "등록 중..." : "등록"}
+                                      </button>
+                                    );
+                                  })()}
                                 </td>
                               </tr>
                             ))}
@@ -2566,6 +3194,94 @@ const App = () => {
                     </div>
                   )}
                 </div>
+                <div
+                  id="month-panel-overall"
+                  role="tabpanel"
+                  aria-labelledby="month-tab-overall"
+                  hidden={monthCommonTab !== "overall"}
+                  className="tab-panel tab-panel-with-loader"
+                >
+                  <div className="sales-block">
+                    <br />
+                    <div className="pnl-section">
+                      <div className="pnl-header-row">
+                        <h3>매출 종합</h3>
+                        <strong>{money.format(monthOverallSummary.salesTotal)}</strong>
+                      </div>
+                      <table className="data-table pnl-table pnl-table-2col">
+                        <thead>
+                          <tr>
+                            <th>매장</th>
+                            <th>월매출(공급가액)</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {monthOverallSummary.rows.length === 0 ? (
+                            <tr>
+                              <td colSpan={2} className="muted">
+                                데이터 없음
+                              </td>
+                            </tr>
+                          ) : (
+                            <>
+                              {monthOverallSummary.rows.map((row) => (
+                                <tr key={`overall-sales-${row.storeId}`}>
+                                  <td>{row.storeName}</td>
+                                  <td>{money.format(row.sales)}</td>
+                                </tr>
+                              ))}
+                              <tr className="pnl-total-row">
+                                <td>전체 합계</td>
+                                <td>{money.format(monthOverallSummary.salesTotal)}</td>
+                              </tr>
+                            </>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                    <br />
+                    <div className="pnl-section">
+                      <div className="pnl-header-row">
+                        <h3>손익 종합</h3>
+                        <strong className={monthOverallSummary.profitTotal < 0 ? "error" : ""}>
+                          {money.format(monthOverallSummary.profitTotal)}
+                        </strong>
+                      </div>
+                      <table className="data-table pnl-table pnl-table-2col">
+                        <thead>
+                          <tr>
+                            <th>매장</th>
+                            <th>월손익</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {monthOverallSummary.rows.length === 0 ? (
+                            <tr>
+                              <td colSpan={2} className="muted">
+                                데이터 없음
+                              </td>
+                            </tr>
+                          ) : (
+                            <>
+                              {monthOverallSummary.rows.map((row) => (
+                                <tr key={`overall-profit-${row.storeId}`}>
+                                  <td>{row.storeName}</td>
+                                  <td className={row.profit < 0 ? "error" : ""}>{money.format(row.profit)}</td>
+                                </tr>
+                              ))}
+                              <tr className="pnl-total-row">
+                                <td>전체 합계</td>
+                                <td className={monthOverallSummary.profitTotal < 0 ? "error" : ""}>
+                                  {money.format(monthOverallSummary.profitTotal)}
+                                </td>
+                              </tr>
+                            </>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>}
           </section>
@@ -2579,9 +3295,18 @@ const App = () => {
               <p className="muted card-meta">
                 {activeStore ? `${activeMonth.label} / ${activeStore.name}` : activeMonth.label}
               </p>
+              <span className="sales-heading-grow" />
+              <button
+                type="button"
+                className="btn-secondary month-collapse-toggle"
+                aria-label={storeDataCollapsed ? "매장별 데이터 열기" : "매장별 데이터 접기"}
+                onClick={() => setStoreDataCollapsed((v) => !v)}
+              >
+                {storeDataCollapsed ? "▸" : "▾"}
+              </button>
             </div>
 
-            <div className="store-data-shell tab-panel-with-loader">
+            {!storeDataCollapsed && <div className="store-data-shell tab-panel-with-loader">
             <div className="store-data-tabbed">
               <br />
               <div className="tab-bar" role="tablist" aria-label="매장별 데이터 구분">
@@ -2941,10 +3666,10 @@ const App = () => {
                                       className="cost-date-link"
                                       onClick={() => openEditCostEntryModal(row)}
                                     >
-                                      {row.paymentDate}
+                                      {displayDateYmd(row.paymentDate)}
                                     </button>
                                   ) : (
-                                    row.paymentDate
+                                    displayDateYmd(row.paymentDate)
                                   )}
                                 </td>
                                 <td>{row.expenseKind}</td>
@@ -2975,7 +3700,330 @@ const App = () => {
                 <span className="tab-loading-spinner" />
               </div>
             )}
+            </div>}
+          </section>
+
+          <section className="panel">
+            <div className="panel-heading">
+              <h2>매장별 간이 손익서</h2>
+              <span className="panel-heading-spacer" aria-hidden={true}>
+                {"\u00A0\u00A0"}
+              </span>
+              <p className="muted card-meta">
+                {activeStore ? `${activeMonth.label} / ${activeStore.name}` : activeMonth.label}
+              </p>
+              <span className="sales-heading-grow" />
+              <button
+                type="button"
+                className="btn-secondary month-collapse-toggle"
+                aria-label={storePnlCollapsed ? "매장별 간이 손익서 열기" : "매장별 간이 손익서 접기"}
+                onClick={() => setStorePnlCollapsed((v) => !v)}
+              >
+                {storePnlCollapsed ? "▸" : "▾"}
+              </button>
             </div>
+            {!storePnlCollapsed && (!activeStore ? (
+              <p className="muted">매장을 선택하면 간이 손익서를 확인할 수 있습니다.</p>
+            ) : (
+              <div className="pnl-sheet">
+                <div className="pnl-section">
+                  <div className="pnl-header-row">
+                    <h3>매출</h3>
+                    <strong>{money.format(pnlSummary.salesTotalSupply)}</strong>
+                  </div>
+                  <table className="data-table pnl-table pnl-table-3col">
+                    <thead>
+                      <tr>
+                        <th>결제수단</th>
+                        <th>공급가액</th>
+                        <th>매출대비비중</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {pnlSummary.salesByPaymentMethod.length === 0 ? (
+                        <tr>
+                          <td colSpan={3} className="muted">
+                            데이터 없음
+                          </td>
+                        </tr>
+                      ) : (
+                        <>
+                          {pnlSummary.salesByPaymentMethod.map((item) => (
+                            <tr key={`sales-${item.label}`}>
+                              <td>{item.label}</td>
+                              <td>{money.format(item.amount)}</td>
+                              <td>{formatSalesRatio(item.amount)}</td>
+                            </tr>
+                          ))}
+                          <tr className="pnl-total-row">
+                            <td>합계</td>
+                            <td>{money.format(pnlSummary.salesTotalSupply)}</td>
+                            <td>{formatSalesRatio(pnlSummary.salesTotalSupply)}</td>
+                          </tr>
+                        </>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+
+                <div className="pnl-section">
+                  <div className="pnl-header-row">
+                    <div className="pnl-header-title-group">
+                      <h3>비용</h3>
+                      <span className="muted pnl-sub-meta-inline">
+                        비용등록: {money.format(pnlSummary.directCostTotalSupply)} / 카드내역:{" "}
+                        {money.format(pnlSummary.cardCostTotalSupply)}
+                      </span>
+                    </div>
+                    <strong>{money.format(pnlSummary.costTotalSupply)}</strong>
+                  </div>
+                  <table className="data-table pnl-table pnl-table-3col">
+                    <thead>
+                      <tr>
+                        <th>비용 계정</th>
+                        <th>공급가액</th>
+                        <th>매출대비비중 (수정매출기준)</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {pnlSummary.normalizedCostByAccount.length === 0 ? (
+                        <tr>
+                          <td colSpan={3} className="muted">
+                            데이터 없음
+                          </td>
+                        </tr>
+                      ) : (
+                        <>
+                          {pnlSummary.normalizedCostByAccount.map((item) => (
+                            <tr key={`cost-${item.label}`}>
+                              <td>{item.label}</td>
+                              <td>{money.format(item.amount)}</td>
+                              <td>{formatKeyMetricRatio(item.amount)}</td>
+                            </tr>
+                          ))}
+                          <tr className="pnl-total-row">
+                            <td>합계</td>
+                            <td>{money.format(pnlSummary.costTotalSupply)}</td>
+                            <td>{formatKeyMetricRatio(pnlSummary.costTotalSupply)}</td>
+                          </tr>
+                        </>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+
+                <div className="pnl-result">
+                  <span>손익</span>
+                  <strong className={pnlSummary.profitSupply < 0 ? "error" : ""}>
+                    {money.format(pnlSummary.profitSupply)}
+                  </strong>
+                </div>
+
+                <div className="pnl-adjustment-grid">
+                  <div className="pnl-adjustment-card">
+                    <div className="pnl-header-row">
+                      <div className="pnl-header-title-group">
+                        <h3>수정 매출 항목</h3>
+                        <span className="muted pnl-sub-meta-inline">(공급가액)</span>
+                      </div>
+                      <strong>{money.format(pnlSummary.revenueAdjustmentTotal)}</strong>
+                    </div>
+                    <div className="row pnl-adjustment-inputs">
+                      <input
+                        value={pnlRevenueAdjustmentLabel}
+                        onChange={(e) => setPnlRevenueAdjustmentLabel(e.target.value)}
+                        placeholder="항목명"
+                      />
+                      <input
+                        value={pnlRevenueAdjustmentAmount}
+                        onChange={(e) => setPnlRevenueAdjustmentAmount(e.target.value)}
+                        placeholder="공급가액"
+                      />
+                      <button
+                        type="button"
+                        className="btn-save"
+                        disabled={pnlAdjustmentSaveBusy || !activeStore}
+                        onClick={() => void addPnlAdjustment("revenue")}
+                      >
+                        추가 저장
+                      </button>
+                    </div>
+                    {(pnlSummary.revenueAdjustments ?? []).length > 0 && (
+                      <table className="data-table pnl-table pnl-adjustment-table">
+                        <thead>
+                          <tr>
+                            <th>항목</th>
+                            <th>공급가액</th>
+                            <th>삭제</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {pnlSummary.revenueAdjustments.map((row) => (
+                            <tr key={row.id}>
+                              <td>{row.label}</td>
+                              <td>{money.format(row.supplyAmount)}</td>
+                              <td>
+                                <button
+                                  type="button"
+                                  className="btn-secondary btn-xs"
+                                  disabled={pnlAdjustmentSaveBusy}
+                                  onClick={() => void removePnlAdjustment("revenue", row.id)}
+                                >
+                                  삭제
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+                          <tr className="pnl-total-row">
+                            <td>최종 매출</td>
+                            <td>{money.format(pnlSummary.finalRevenueSupply)}</td>
+                            <td />
+                          </tr>
+                        </tbody>
+                      </table>
+                    )}
+                  </div>
+
+                  <div className="pnl-adjustment-card">
+                    <div className="pnl-header-row">
+                      <div className="pnl-header-title-group">
+                        <h3>수정 비용 항목</h3>
+                        <span className="muted pnl-sub-meta-inline">(공급가액)</span>
+                      </div>
+                      <strong>{money.format(pnlSummary.costAdjustmentTotal)}</strong>
+                    </div>
+                    <div className="row pnl-adjustment-inputs">
+                      <input
+                        value={pnlCostAdjustmentLabel}
+                        onChange={(e) => setPnlCostAdjustmentLabel(e.target.value)}
+                        placeholder="항목명"
+                      />
+                      <input
+                        value={pnlCostAdjustmentAmount}
+                        onChange={(e) => setPnlCostAdjustmentAmount(e.target.value)}
+                        placeholder="공급가액"
+                      />
+                      <button
+                        type="button"
+                        className="btn-save"
+                        disabled={pnlAdjustmentSaveBusy || !activeStore}
+                        onClick={() => void addPnlAdjustment("cost")}
+                      >
+                        추가 저장
+                      </button>
+                    </div>
+                    {(pnlSummary.costAdjustments ?? []).length > 0 && (
+                      <table className="data-table pnl-table pnl-adjustment-table">
+                        <thead>
+                          <tr>
+                            <th>항목</th>
+                            <th>공급가액</th>
+                            <th>삭제</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {pnlSummary.costAdjustments.map((row) => (
+                            <tr key={row.id}>
+                              <td>{row.label}</td>
+                              <td>{money.format(row.supplyAmount)}</td>
+                              <td>
+                                <button
+                                  type="button"
+                                  className="btn-secondary btn-xs"
+                                  disabled={pnlAdjustmentSaveBusy}
+                                  onClick={() => void removePnlAdjustment("cost", row.id)}
+                                >
+                                  삭제
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+                          <tr className="pnl-total-row">
+                            <td>최종 비용</td>
+                            <td>{money.format(pnlSummary.finalCostSupply)}</td>
+                            <td />
+                          </tr>
+                        </tbody>
+                      </table>
+                    )}
+                  </div>
+                </div>
+                {pnlAdjustmentMessage && (
+                  <p className={pnlAdjustmentMessageType === "error" ? "error" : "muted"}>{pnlAdjustmentMessage}</p>
+                )}
+                <div className="pnl-result">
+                  <span>최종 손익 (수정 반영)</span>
+                  <strong className={pnlSummary.finalProfitSupply < 0 ? "error" : ""}>
+                    {money.format(pnlSummary.finalProfitSupply)}
+                  </strong>
+                </div>
+                <div className="pnl-section">
+                  <div className="pnl-header-row">
+                    <h3>주요 지표 1</h3>
+                  </div>
+                  <table className="data-table pnl-table pnl-table-3col">
+                    <thead>
+                      <tr>
+                        <th>항목</th>
+                        <th>금액</th>
+                        <th>매출대비비중 (수정매출기준)</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr>
+                        <td>메뉴 비용합</td>
+                        <td>{money.format(pnlSummary.menuCostSum)}</td>
+                        <td>{formatKeyMetricRatio(pnlSummary.menuCostSum)}</td>
+                      </tr>
+                      <tr>
+                        <td>음료주류 비용합</td>
+                        <td>{money.format(pnlSummary.beverageAlcoholCostSum)}</td>
+                        <td>{formatKeyMetricRatio(pnlSummary.beverageAlcoholCostSum)}</td>
+                      </tr>
+                      <tr>
+                        <td>인건비 합</td>
+                        <td>{money.format(pnlSummary.laborCostSum)}</td>
+                        <td>{formatKeyMetricRatio(pnlSummary.laborCostSum)}</td>
+                      </tr>
+                      <tr>
+                        <td>임관리비 합</td>
+                        <td>{money.format(pnlSummary.occupancyMgmtCostSum)}</td>
+                        <td>{formatKeyMetricRatio(pnlSummary.occupancyMgmtCostSum)}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+                <div className="pnl-section">
+                  <div className="pnl-header-row">
+                    <h3>주요 지표 2</h3>
+                  </div>
+                  <table className="data-table pnl-table pnl-table-4col">
+                    <thead>
+                      <tr>
+                        <th>항목</th>
+                        <th>금액</th>
+                        <th>해당매출</th>
+                        <th>실질 원가율</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr>
+                        <td>메뉴 비용합</td>
+                        <td>{money.format(pnlSummary.menuCostSum)}</td>
+                        <td>{money.format(pnlSummary.menuSalesSupply)}</td>
+                        <td>{formatRatio(pnlSummary.menuCostSum, pnlSummary.menuSalesSupply)}</td>
+                      </tr>
+                      <tr>
+                        <td>음료주류 비용합</td>
+                        <td>{money.format(pnlSummary.beverageAlcoholCostSum)}</td>
+                        <td>{money.format(pnlSummary.beverageAlcoholSalesSupply)}</td>
+                        <td>{formatRatio(pnlSummary.beverageAlcoholCostSum, pnlSummary.beverageAlcoholSalesSupply)}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            ))}
           </section>
         </>
       )}

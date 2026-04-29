@@ -337,7 +337,17 @@ button {
 }
 
 #month-panel-evidence .data-table {
-  font-size: 10.4px;
+  font-size: calc(10.4px * 0.9);
+}
+
+#month-panel-evidence .data-table .card-table-select {
+  min-width: calc(120px * 0.9);
+  font-size: 90%;
+}
+
+#month-panel-evidence .data-table .btn-xs {
+  padding: calc(4px * 0.9) calc(8px * 0.9);
+  font-size: calc(12px * 0.9);
 }
 
 .modal-backdrop {
@@ -432,6 +442,133 @@ button {
   padding: 4px 8px;
   line-height: 1;
   font-size: 14px;
+}
+
+.pnl-sheet {
+  margin-top: 8px;
+  display: grid;
+  gap: 12px;
+}
+
+.pnl-section {
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: #fff;
+}
+
+.pnl-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.pnl-header-row h3 {
+  margin: 0;
+  font-size: 0.98rem;
+}
+
+.pnl-header-title-group {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.pnl-sub-meta {
+  margin: 0 0 8px;
+  font-size: 12px;
+}
+
+.pnl-sub-meta-inline {
+  font-size: 12px;
+}
+
+.pnl-table {
+  margin-top: 0;
+}
+
+.pnl-table-3col {
+  table-layout: fixed;
+}
+
+.pnl-table-3col th,
+.pnl-table-3col td {
+  width: 33.333%;
+}
+
+.pnl-table-2col {
+  table-layout: fixed;
+}
+
+.pnl-table-2col th,
+.pnl-table-2col td {
+  width: 50%;
+}
+
+.pnl-table-4col {
+  table-layout: fixed;
+}
+
+.pnl-table-4col th:nth-child(1),
+.pnl-table-4col td:nth-child(1) {
+  width: 33.333%;
+}
+
+.pnl-table-4col th:nth-child(2),
+.pnl-table-4col td:nth-child(2),
+.pnl-table-4col th:nth-child(3),
+.pnl-table-4col td:nth-child(3),
+.pnl-table-4col th:nth-child(4),
+.pnl-table-4col td:nth-child(4) {
+  width: 22.222%;
+}
+
+.pnl-total-row td {
+  font-weight: 600;
+  background: #f8fafc;
+}
+
+.pnl-result {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  background: #f8fafc;
+  padding: 12px;
+}
+
+.pnl-result strong {
+  font-size: 1.05rem;
+}
+
+.pnl-adjustment-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.pnl-adjustment-card {
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+
+.pnl-adjustment-inputs {
+  margin: 6px 0 10px;
+}
+
+.pnl-adjustment-inputs input {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.pnl-adjustment-table {
+  margin-top: 0;
 }
 
 .btn-xs {
