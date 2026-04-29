@@ -70,6 +70,7 @@ interface EvidenceRow {
   evidenceType: "세금계산서" | "계산서" | "기타증빙";
   expenseAccount?: string;
   appliedStore?: string;
+  costRegisterChecked?: boolean;
 }
 
 interface StoreRecord {
@@ -504,6 +505,7 @@ const parseEvidenceFile = async (
           evidenceType: kind,
           expenseAccount: "",
           appliedStore: "",
+          costRegisterChecked: false,
         };
       }
       const date = formatBusinessDay(findCell(row, ["작성일자", "작성 일자"]));
@@ -525,6 +527,7 @@ const parseEvidenceFile = async (
         evidenceType: kind,
         expenseAccount: "",
         appliedStore: "",
+        costRegisterChecked: false,
       };
     })
     .filter((r) => {
@@ -634,6 +637,7 @@ const normalizeEvidenceRow = (raw: Partial<EvidenceRow>): EvidenceRow => ({
     raw.evidenceType === "계산서" || raw.evidenceType === "기타증빙" ? raw.evidenceType : "세금계산서",
   expenseAccount: typeof raw.expenseAccount === "string" ? raw.expenseAccount : String(raw.expenseAccount ?? ""),
   appliedStore: typeof raw.appliedStore === "string" ? raw.appliedStore : String(raw.appliedStore ?? ""),
+  costRegisterChecked: Boolean(raw.costRegisterChecked),
 });
 
 const normalizePnlAdjustmentRow = (raw: Partial<PnlAdjustmentRow>): PnlAdjustmentRow => ({
@@ -2580,6 +2584,12 @@ const App = () => {
     updateEvidenceRowsLocal((rows) => rows.map((r) => (r.id === rowId ? { ...r, expenseAccount } : r)));
   };
 
+  const onEvidenceRowCostRegisterCheckToggle = (rowId: string) => {
+    updateEvidenceRowsLocal((rows) =>
+      rows.map((r) => (r.id === rowId ? { ...r, costRegisterChecked: !r.costRegisterChecked } : r)),
+    );
+  };
+
   const onEvidenceRegisterCost = async (row: EvidenceRow) => {
     if (!activeMonthId) return;
     const storeName = (row.appliedStore ?? "").trim();
@@ -3155,14 +3165,25 @@ const App = () => {
                                     );
                                     if (!storeName || hasMatched) return null;
                                     return (
-                                      <button
-                                        type="button"
-                                        className="btn-save btn-xs"
-                                        disabled={evidenceCostRegisteringId === row.id}
-                                        onClick={() => void onEvidenceRegisterCost(row)}
-                                      >
-                                        {evidenceCostRegisteringId === row.id ? "등록 중..." : "등록"}
-                                      </button>
+                                      <>
+                                        <button
+                                          type="button"
+                                          className="btn-save btn-xs"
+                                          disabled={evidenceCostRegisteringId === row.id || !!row.costRegisterChecked}
+                                          onClick={() => void onEvidenceRegisterCost(row)}
+                                        >
+                                          {evidenceCostRegisteringId === row.id ? "등록 중..." : "등록"}
+                                        </button>
+                                        <span aria-hidden={true}>{"\u00A0"}</span>
+                                        <button
+                                          type="button"
+                                          className="btn-secondary btn-xs"
+                                          aria-pressed={!!row.costRegisterChecked}
+                                          onClick={() => onEvidenceRowCostRegisterCheckToggle(row.id)}
+                                        >
+                                          확인
+                                        </button>
+                                      </>
                                     );
                                   })()}
                                 </td>
