@@ -576,6 +576,16 @@ button {
   font-size: 12px;
 }
 
+#month-panel-evidence .evidence-register-disabled {
+  background: #9ca3af;
+  border-color: #9ca3af;
+  color: #fff;
+}
+
+#month-panel-evidence .evidence-confirm-checked {
+  text-decoration: line-through;
+}
+
 .modal-error {
   margin-top: 8px;
   font-size: 13px;

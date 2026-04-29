@@ -3168,7 +3168,7 @@ const App = () => {
                                       <>
                                         <button
                                           type="button"
-                                          className="btn-save btn-xs"
+                                          className={`btn-save btn-xs${row.costRegisterChecked ? " evidence-register-disabled" : ""}`}
                                           disabled={evidenceCostRegisteringId === row.id || !!row.costRegisterChecked}
                                           onClick={() => void onEvidenceRegisterCost(row)}
                                         >
@@ -3177,7 +3177,7 @@ const App = () => {
                                         <span aria-hidden={true}>{"\u00A0"}</span>
                                         <button
                                           type="button"
-                                          className="btn-secondary btn-xs"
+                                          className={`btn-secondary btn-xs${row.costRegisterChecked ? " evidence-confirm-checked" : ""}`}
                                           aria-pressed={!!row.costRegisterChecked}
                                           onClick={() => onEvidenceRowCostRegisterCheckToggle(row.id)}
                                         >
