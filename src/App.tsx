@@ -864,6 +864,40 @@ const emptyStore = (name: string): StoreRecord => ({
 });
 
 const money = new Intl.NumberFormat("ko-KR");
+
+const monthLabelYear = (label: string): string => {
+  const m = label.trim().match(/^(\d{4})/);
+  return m?.[1] ?? "";
+};
+
+const calcMonthOverallRows = (month: MonthRecord) =>
+  month.stores.map((store) => {
+    const baseSales = Math.round((store.salesSummaryRows ?? []).reduce((sum, row) => sum + row.supplyAmount, 0));
+    const cardCost = Math.round(
+      (month.cardHistoryRows ?? [])
+        .filter((row) => normalize(row.appliedStore ?? "") === normalize(store.name))
+        .reduce((sum, row) => sum + Math.round(row.approvalAmount / 1.1), 0),
+    );
+    const directCost = Math.round((store.costEntryRows ?? []).reduce((sum, row) => sum + row.supplyAmount, 0));
+    const revenueAdjustments = Math.round(
+      (store.pnlRevenueAdjustments ?? []).reduce((sum, row) => sum + row.supplyAmount, 0),
+    );
+    const costAdjustments = Math.round(
+      (store.pnlCostAdjustments ?? []).reduce((sum, row) => sum + row.supplyAmount, 0),
+    );
+    const sales = baseSales + revenueAdjustments;
+    const profit = sales - (directCost + cardCost + costAdjustments);
+    return { storeId: store.id, storeName: store.name, sales, profit };
+  });
+
+const calcMonthOverallTotals = (month: MonthRecord) => {
+  const rows = calcMonthOverallRows(month);
+  return {
+    salesTotal: Math.round(rows.reduce((sum, row) => sum + row.sales, 0)),
+    profitTotal: Math.round(rows.reduce((sum, row) => sum + row.profit, 0)),
+  };
+};
+
 const sortSalesRows = (rows: SalesSummaryRow[]): SalesSummaryRow[] => {
   const manual = rows
     .filter((r) => r.entryType === "manual")
@@ -1533,28 +1567,30 @@ const App = () => {
     if (!activeMonth) {
       return { rows: [] as Array<{ storeId: string; storeName: string; sales: number; profit: number }>, salesTotal: 0, profitTotal: 0 };
     }
-    const rows = activeMonth.stores.map((store) => {
-      const baseSales = Math.round((store.salesSummaryRows ?? []).reduce((sum, row) => sum + row.supplyAmount, 0));
-      const cardCost = Math.round(
-        (activeMonth.cardHistoryRows ?? [])
-          .filter((row) => normalize(row.appliedStore ?? "") === normalize(store.name))
-          .reduce((sum, row) => sum + Math.round(row.approvalAmount / 1.1), 0),
-      );
-      const directCost = Math.round((store.costEntryRows ?? []).reduce((sum, row) => sum + row.supplyAmount, 0));
-      const revenueAdjustments = Math.round(
-        (store.pnlRevenueAdjustments ?? []).reduce((sum, row) => sum + row.supplyAmount, 0),
-      );
-      const costAdjustments = Math.round(
-        (store.pnlCostAdjustments ?? []).reduce((sum, row) => sum + row.supplyAmount, 0),
-      );
-      const sales = baseSales + revenueAdjustments;
-      const profit = sales - (directCost + cardCost + costAdjustments);
-      return { storeId: store.id, storeName: store.name, sales, profit };
-    });
+    const rows = calcMonthOverallRows(activeMonth);
     const salesTotal = Math.round(rows.reduce((sum, row) => sum + row.sales, 0));
     const profitTotal = Math.round(rows.reduce((sum, row) => sum + row.profit, 0));
     return { rows, salesTotal, profitTotal };
-  }, [activeMonth, months]);
+  }, [activeMonth]);
+
+  const monthOverallYearCumulative = useMemo(() => {
+    if (!activeMonthId) return { salesTotal: 0, profitTotal: 0 };
+    const idx = months.findIndex((m) => m.id === activeMonthId);
+    if (idx < 0) return { salesTotal: 0, profitTotal: 0 };
+    const activeYear = monthLabelYear(months[idx].label);
+    if (!activeYear) return { salesTotal: 0, profitTotal: 0 };
+
+    let salesTotal = 0;
+    let profitTotal = 0;
+    for (let i = 0; i <= idx; i++) {
+      const month = months[i]!;
+      if (monthLabelYear(month.label) !== activeYear) continue;
+      const totals = calcMonthOverallTotals(month);
+      salesTotal += totals.salesTotal;
+      profitTotal += totals.profitTotal;
+    }
+    return { salesTotal: Math.round(salesTotal), profitTotal: Math.round(profitTotal) };
+  }, [months, activeMonthId]);
 
   /** 낙관적 갱신 후 `saveState` 실패 시 ref·React 상태를 롤백 */
   const applyMonthsAndSave = async (
@@ -3383,7 +3419,10 @@ const App = () => {
                     <div className="pnl-section">
                       <div className="pnl-header-row">
                         <h3>매출 종합</h3>
-                        <strong>{money.format(monthOverallSummary.salesTotal)}</strong>
+                        <div className="pnl-header-value-group">
+                          <strong>{money.format(monthOverallSummary.salesTotal)}</strong>
+                          <span className="pnl-cumulative-inline">누적 {money.format(monthOverallYearCumulative.salesTotal)}</span>
+                        </div>
                       </div>
                       <table className="data-table pnl-table pnl-table-2col">
                         <thead>
@@ -3420,9 +3459,12 @@ const App = () => {
                     <div className="pnl-section">
                       <div className="pnl-header-row">
                         <h3>손익 종합</h3>
-                        <strong className={monthOverallSummary.profitTotal < 0 ? "error" : ""}>
-                          {money.format(monthOverallSummary.profitTotal)}
-                        </strong>
+                        <div className="pnl-header-value-group">
+                          <strong className={monthOverallSummary.profitTotal < 0 ? "error" : ""}>
+                            {money.format(monthOverallSummary.profitTotal)}
+                          </strong>
+                          <span className="pnl-cumulative-inline">누적 {money.format(monthOverallYearCumulative.profitTotal)}</span>
+                        </div>
                       </div>
                       <table className="data-table pnl-table pnl-table-2col">
                         <thead>
