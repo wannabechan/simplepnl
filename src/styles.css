@@ -281,36 +281,96 @@ button {
   -webkit-overflow-scrolling: touch;
 }
 
+/** 비용 등록: 테이블이 패널 너비에 맞춰지도록 가로 스크롤 없음 */
+.data-table-scroll-costs {
+  overflow-x: hidden;
+}
+
 .data-table-costs {
-  min-width: 1000px;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
   table-layout: fixed;
+  /* 기존 비용 테이블 글자 크기 대비 85% */
+  font-size: calc(13px * 0.85 * 0.85);
+  margin-top: 0;
+}
+
+.data-table-costs th,
+.data-table-costs td {
+  padding: 4px 5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
+.data-table-costs td:has(select),
+.data-table-costs td:has(button) {
+  overflow: visible;
+  text-overflow: clip;
 }
 
 .data-table-costs th:nth-child(1),
-.data-table-costs td:nth-child(1),
+.data-table-costs td:nth-child(1) {
+  width: 8%;
+}
+
 .data-table-costs th:nth-child(2),
-.data-table-costs td:nth-child(2),
-.data-table-costs th:nth-child(4),
-.data-table-costs td:nth-child(4),
-.data-table-costs th:nth-child(5),
-.data-table-costs td:nth-child(5),
-.data-table-costs th:nth-child(6),
-.data-table-costs td:nth-child(6) {
-  width: 11.111%;
+.data-table-costs td:nth-child(2) {
+  width: 9%;
 }
 
 .data-table-costs th:nth-child(3),
 .data-table-costs td:nth-child(3) {
-  width: 21.111%;
+  width: 20%;
+}
+
+.data-table-costs th:nth-child(4),
+.data-table-costs td:nth-child(4),
+.data-table-costs th:nth-child(5),
+.data-table-costs td:nth-child(5) {
+  width: 9%;
+}
+
+.data-table-costs th:nth-child(6),
+.data-table-costs td:nth-child(6) {
+  width: 8%;
 }
 
 .data-table-costs th:nth-child(7),
 .data-table-costs td:nth-child(7),
 .data-table-costs th:nth-child(8),
-.data-table-costs td:nth-child(8),
+.data-table-costs td:nth-child(8) {
+  width: 6%;
+}
+
 .data-table-costs th:nth-child(9),
 .data-table-costs td:nth-child(9) {
-  width: 7.777%;
+  width: 15%;
+}
+
+.data-table-costs th:nth-child(10),
+.data-table-costs td:nth-child(10) {
+  width: 10%;
+}
+
+.data-table-costs .card-table-select {
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
+  padding: 3px 5px;
+  font-size: inherit;
+  box-sizing: border-box;
+}
+
+.data-table-costs .cost-date-link {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: inline-block;
+  vertical-align: bottom;
 }
 
 .data-table-products {

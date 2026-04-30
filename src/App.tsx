@@ -24,7 +24,46 @@ interface ProductSummaryRow {
   division?: "" | "메뉴" | "음료주류" | "기타";
 }
 
-/** 비용 등록: 헤더(결제일·비용계정·…) 다음 행부터 데이터 (9컬럼) */
+/** 비용 등록: 헤더(결제일·비용계정·…) 다음 행부터 본문 + 증빙발행 */
+type CostEvidenceIssueValue = "세금계산서" | "계산서" | "기타증빙" | "해당없음";
+
+/** 빈 문자열 = 콤보에서 '선택' */
+type CostEvidenceIssue = "" | CostEvidenceIssueValue;
+
+const COST_EVIDENCE_ISSUE_VALUE_OPTIONS: readonly CostEvidenceIssueValue[] = [
+  "세금계산서",
+  "계산서",
+  "기타증빙",
+  "해당없음",
+];
+
+const normalizeCostEvidenceIssue = (raw: unknown): CostEvidenceIssue => {
+  if (raw === "" || raw === null || raw === undefined) return "";
+  const s = typeof raw === "string" ? raw.trim() : "";
+  if (s === "") return "";
+  return COST_EVIDENCE_ISSUE_VALUE_OPTIONS.includes(s as CostEvidenceIssueValue)
+    ? (s as CostEvidenceIssueValue)
+    : "";
+};
+
+type CostTaxModeChoice = "과세" | "비과세";
+type CostPayStatusChoice = "결제" | "비결제";
+
+const COST_TAX_MODE_OPTIONS: readonly CostTaxModeChoice[] = ["과세", "비과세"];
+const COST_PAY_STATUS_OPTIONS: readonly CostPayStatusChoice[] = ["결제", "비결제"];
+
+const normalizeCostTaxModeForRow = (raw: unknown): CostTaxModeChoice => {
+  const s = typeof raw === "string" ? raw.trim() : String(raw ?? "").trim();
+  if (s === "비과세" || s === "면세") return "비과세";
+  return "과세";
+};
+
+const normalizeCostPayStatusForRow = (raw: unknown): CostPayStatusChoice => {
+  const s = typeof raw === "string" ? raw.trim() : String(raw ?? "").trim();
+  if (s === "비결제" || s === "미결제") return "비결제";
+  return "결제";
+};
+
 interface CostEntryRow {
   id: string;
   paymentDate: string;
@@ -33,9 +72,16 @@ interface CostEntryRow {
   totalAmount: number;
   supplyAmount: number;
   vat: number;
-  taxMode: string;
-  payStatus: string;
+  taxMode: CostTaxModeChoice;
+  payStatus: CostPayStatusChoice;
   memo: string;
+  evidenceIssue: CostEvidenceIssue;
+  /** 사용자가 증빙발행 콤보를 확인·저장한 뒤에는 자동 매칭으로 덮어쓰지 않음 */
+  evidenceIssueLocked?: boolean;
+  /** 과세여부 콤보를 확인·저장한 뒤 자동 보정 없이 유지 */
+  taxModeLocked?: boolean;
+  /** 결제여부 콤보를 확인·저장한 뒤 자동 보정 없이 유지 */
+  payStatusLocked?: boolean;
   entryType?: "upload" | "manual";
   manualOrder?: number;
 }
@@ -391,6 +437,7 @@ const parseCostFile = async (file: File): Promise<CostEntryRow[]> => {
         taxMode,
         payStatus,
         memo,
+        evidenceIssue: "" as const,
         entryType: "upload" as const,
         manualOrder: 0,
       };
@@ -407,7 +454,8 @@ const parseCostFile = async (file: File): Promise<CostEntryRow[]> => {
         r.payStatus !== "" ||
         r.memo !== ""
       );
-    });
+    })
+    .map((r) => normalizeCostEntryRow(r as Partial<CostEntryRow>));
 };
 
 const parseCardFile = async (file: File): Promise<CardHistoryRow[]> => {
@@ -598,14 +646,18 @@ const normalizeCostEntryRow = (raw: Partial<CostEntryRow>): CostEntryRow => ({
   totalAmount: toNumber(raw.totalAmount),
   supplyAmount: toNumber(raw.supplyAmount),
   vat: toNumber(raw.vat),
-  taxMode: typeof raw.taxMode === "string" ? raw.taxMode : String(raw.taxMode ?? ""),
-  payStatus: typeof raw.payStatus === "string" ? raw.payStatus : String(raw.payStatus ?? ""),
+  taxMode: normalizeCostTaxModeForRow(raw.taxMode),
+  payStatus: normalizeCostPayStatusForRow(raw.payStatus),
   memo:
     typeof raw.memo === "string"
       ? raw.memo.startsWith("증빙자동등록")
         ? "증빙등록"
         : raw.memo
       : String(raw.memo ?? ""),
+  evidenceIssue: normalizeCostEvidenceIssue(raw.evidenceIssue),
+  evidenceIssueLocked: Boolean(raw.evidenceIssueLocked),
+  taxModeLocked: Boolean(raw.taxModeLocked),
+  payStatusLocked: Boolean(raw.payStatusLocked),
   entryType: raw.entryType === "manual" ? "manual" : "upload",
   manualOrder: typeof raw.manualOrder === "number" && Number.isFinite(raw.manualOrder) ? raw.manualOrder : 0,
 });
@@ -866,6 +918,12 @@ const COST_ACCOUNT_OPTIONS = [
   "_기타",
 ] as const;
 
+/** 증빙발행 자동판단 시 항상 '해당없음'으로 두는 비용계정 */
+const costExpenseKindRequiresNoEvidenceIssue = (expenseKind: string): boolean => {
+  const k = expenseKind.trim();
+  return k === "인건비" || k === "보험";
+};
+
 const levenshteinDistance = (a: string, b: string): number => {
   const m = a.length;
   const n = b.length;
@@ -936,6 +994,49 @@ const supplyAmountSimilarEnough = (a: number, b: number, minRatio: number): bool
   const lo = Math.min(absa, absb);
   if (hi === 0) return ar === br;
   return lo / hi >= minRatio;
+};
+
+/** 업체명: 정규화 후 공통 연속 문자열 2자 이상 */
+const vendorNamesShareAtLeastTwoChars = (a: string, b: string): boolean => {
+  const na = normalize(a.trim());
+  const nb = normalize(b.trim());
+  if (!na || !nb) return false;
+  return longestCommonSubstringLength(na, nb) >= 2;
+};
+
+const costExpenseMatchesEvidenceAccount = (costKind: string, evAccount: string | undefined): boolean =>
+  (costKind ?? "").trim() === (evAccount ?? "").trim();
+
+const evidenceAppliedStoreMatches = (storeName: string, applied: string | undefined): boolean =>
+  normalize((storeName ?? "").trim()) === normalize((applied ?? "").trim());
+
+/** 비용 행과 조건이 맞는 증빙 중 업체명 공통 길이·금액 일치도가 가장 나은 한 건 */
+const findBestEvidenceMatchForCostRow = (
+  cost: CostEntryRow,
+  currentStoreName: string,
+  evidenceList: EvidenceRow[],
+): EvidenceRow | null => {
+  const costVendor = cost.vendorName.trim();
+  const costSupply = Math.round(cost.supplyAmount);
+  let best: { ev: EvidenceRow; vRun: number; amtRatio: number } | null = null;
+  for (const ev of evidenceList) {
+    if (!costExpenseMatchesEvidenceAccount(cost.expenseKind, ev.expenseAccount)) continue;
+    if (!evidenceAppliedStoreMatches(currentStoreName, ev.appliedStore)) continue;
+    if (!supplyAmountSimilarEnough(costSupply, ev.supplyAmount, 0.97)) continue;
+    if (!vendorNamesShareAtLeastTwoChars(costVendor, ev.vendorName)) continue;
+    const na = normalize(costVendor);
+    const nb = normalize(ev.vendorName.trim());
+    const vRun = longestCommonSubstringLength(na, nb);
+    const ar = Math.round(Math.abs(costSupply));
+    const br = Math.round(Math.abs(ev.supplyAmount));
+    const hi = Math.max(ar, br, 1);
+    const lo = Math.min(ar, br);
+    const amtRatio = lo / hi;
+    if (!best || vRun > best.vRun || (vRun === best.vRun && amtRatio > best.amtRatio)) {
+      best = { ev, vRun, amtRatio };
+    }
+  }
+  return best?.ev ?? null;
 };
 
 const findBestCostRowMatch = (
@@ -1630,7 +1731,10 @@ const App = () => {
         .find((m) => m.id === activeMonthId)
         ?.stores.find((s) => s.id === activeStoreId) ?? null;
     const manualRows = (activeStoreCurrent?.costEntryRows ?? []).filter((r) => r.entryType === "manual");
-    const mergedRows = sortCostRows([...manualRows, ...rows.map((r) => ({ ...r, entryType: "upload" as const }))]);
+    const mergedRows = sortCostRows([
+      ...manualRows,
+      ...rows.map((r) => normalizeCostEntryRow({ ...r, entryType: "upload" })),
+    ]);
     const next = monthsRef.current.map((month) => {
       if (month.id !== activeMonthId) return month;
       return {
@@ -1679,6 +1783,98 @@ const App = () => {
       const message = error instanceof Error ? error.message : "Unknown save error";
       setSyncError(message);
       return { ok: false, message };
+    }
+  };
+
+  /** 현재 월 증빙 내역과 비교해 비용 행의 증빙발행 값을 맞춥니다. 콤보로 고정(`evidenceIssueLocked`)한 행은 계정·증빙 매칭 모두 건드리지 않습니다. 인건비·보험은 잠금이 없을 때만 자동으로 해당없음. */
+  const reconcileCostEvidenceIssuesFromMonthEvidence = async () => {
+    if (!activeMonthId || !activeStoreId) return;
+    const month = monthsRef.current.find((m) => m.id === activeMonthId);
+    const store = month?.stores.find((s) => s.id === activeStoreId);
+    if (!month || !store) return;
+    const evidenceList = month.evidenceRows ?? [];
+    const rows = store.costEntryRows ?? [];
+    if (rows.length === 0) return;
+    let changed = false;
+    const nextRows = rows.map((row) => {
+      if (row.evidenceIssueLocked) return row;
+      if (costExpenseKindRequiresNoEvidenceIssue(row.expenseKind)) {
+        if (row.evidenceIssue === "해당없음") return row;
+        changed = true;
+        return { ...row, evidenceIssue: "해당없음" as const, evidenceIssueLocked: true };
+      }
+      const matched = findBestEvidenceMatchForCostRow(row, store.name, evidenceList);
+      const nextIssue: CostEvidenceIssue = matched ? matched.evidenceType : "";
+      if (row.evidenceIssue === nextIssue) return row;
+      changed = true;
+      return { ...row, evidenceIssue: nextIssue };
+    });
+    if (!changed) return;
+    await persistAllCostRows(nextRows);
+  };
+
+  const onCostEvidenceIssueChange = async (rowId: string, value: CostEvidenceIssue) => {
+    if (!activeMonthId || !activeStoreId) return;
+    const store = monthsRef.current
+      .find((m) => m.id === activeMonthId)
+      ?.stores.find((s) => s.id === activeStoreId);
+    if (!store) return;
+    const existing = [...(store.costEntryRows ?? [])];
+    const row = existing.find((r) => r.id === rowId);
+    if (!row || row.evidenceIssue === value) return;
+    const ok = window.confirm(
+      "증빙 종류를 변경하시겠습니까?",
+    );
+    if (!ok) return;
+    const next = existing.map((r) =>
+      r.id === rowId ? { ...r, evidenceIssue: value, evidenceIssueLocked: true } : r,
+    );
+    const result = await persistAllCostRows(next);
+    if (!result.ok) {
+      window.alert(result.message);
+    }
+  };
+
+  const onCostTaxModeChange = async (rowId: string, value: CostTaxModeChoice) => {
+    if (!activeMonthId || !activeStoreId) return;
+    const store = monthsRef.current
+      .find((m) => m.id === activeMonthId)
+      ?.stores.find((s) => s.id === activeStoreId);
+    if (!store) return;
+    const existing = [...(store.costEntryRows ?? [])];
+    const row = existing.find((r) => r.id === rowId);
+    if (!row || row.taxMode === value) return;
+    const ok = window.confirm("과세여부를 변경하시겠습니까?");
+    if (!ok) return;
+    const derived = calcSupplyAndVat(String(row.totalAmount), value);
+    const next = existing.map((r) =>
+      r.id === rowId
+        ? { ...r, taxMode: value, supplyAmount: derived.supplyAmount, vat: derived.vat, taxModeLocked: true }
+        : r,
+    );
+    const result = await persistAllCostRows(next);
+    if (!result.ok) {
+      window.alert(result.message);
+    }
+  };
+
+  const onCostPayStatusChange = async (rowId: string, value: CostPayStatusChoice) => {
+    if (!activeMonthId || !activeStoreId) return;
+    const store = monthsRef.current
+      .find((m) => m.id === activeMonthId)
+      ?.stores.find((s) => s.id === activeStoreId);
+    if (!store) return;
+    const existing = [...(store.costEntryRows ?? [])];
+    const row = existing.find((r) => r.id === rowId);
+    if (!row || row.payStatus === value) return;
+    const ok = window.confirm("결제여부를 변경하시겠습니까?");
+    if (!ok) return;
+    const next = existing.map((r) =>
+      r.id === rowId ? { ...r, payStatus: value, payStatusLocked: true } : r,
+    );
+    const result = await persistAllCostRows(next);
+    if (!result.ok) {
+      window.alert(result.message);
     }
   };
 
@@ -2080,6 +2276,7 @@ const App = () => {
       setCostModalProgress(`저장에 실패했습니다: ${result.message} (저장을 다시 눌러 재시도할 수 있습니다.)`);
       return;
     }
+    await reconcileCostEvidenceIssuesFromMonthEvidence();
     setCostModalProgress("모든 작업이 완료되었습니다.");
     await new Promise((r) => setTimeout(r, 450));
     resetCostModal();
@@ -2129,6 +2326,7 @@ const App = () => {
     setCostEntryBusy(true);
     const existing = [...(activeStore.costEntryRows ?? [])];
     const derived = calcSupplyAndVat(costEntryDraft.totalAmount, costEntryDraft.taxMode);
+    const prevRow = costEntryEditingId ? existing.find((r) => r.id === costEntryEditingId) : null;
     const asRow: CostEntryRow = {
       id: costEntryEditingId ?? nowId(),
       paymentDate: formatBusinessDay(costEntryDraft.paymentDate),
@@ -2137,16 +2335,21 @@ const App = () => {
       totalAmount: toNumber(costEntryDraft.totalAmount),
       supplyAmount: derived.supplyAmount,
       vat: derived.vat,
-      taxMode: costEntryDraft.taxMode.trim(),
-      payStatus: costEntryDraft.payStatus.trim(),
+      taxMode: normalizeCostTaxModeForRow(costEntryDraft.taxMode),
+      payStatus: normalizeCostPayStatusForRow(costEntryDraft.payStatus),
       memo: costEntryDraft.memo.trim(),
-      entryType: "manual",
+      evidenceIssue: prevRow?.evidenceIssue ?? "",
+      evidenceIssueLocked: prevRow?.evidenceIssueLocked ?? false,
+      taxModeLocked: prevRow?.taxModeLocked ?? false,
+      payStatusLocked: prevRow?.payStatusLocked ?? false,
+      entryType:
+        costEntryEditingId === null ? "manual" : prevRow?.entryType === "upload" ? "upload" : "manual",
       manualOrder:
         costEntryEditingId === null
           ? existing
               .filter((r) => r.entryType === "manual")
               .reduce((max, r) => Math.max(max, r.manualOrder ?? 0), 0) + 1
-          : existing.find((r) => r.id === costEntryEditingId)?.manualOrder ?? 0,
+          : (prevRow?.manualOrder ?? 0),
     };
 
     const next =
@@ -2159,6 +2362,7 @@ const App = () => {
       window.alert(result.message);
       return;
     }
+    await reconcileCostEvidenceIssuesFromMonthEvidence();
     closeCostEntryModal();
   };
 
@@ -2643,6 +2847,10 @@ const App = () => {
         taxMode: vat > 0 ? "과세" : "비과세",
         payStatus: "결제",
         memo: "증빙등록",
+        evidenceIssue: row.evidenceType,
+        evidenceIssueLocked: true,
+        taxModeLocked: false,
+        payStatusLocked: false,
         entryType: "manual",
         manualOrder,
       },
@@ -2772,11 +2980,15 @@ const App = () => {
     setCostSortByAccount(false);
   }, [storeDataTab, activeStoreId]);
 
+  useEffect(() => {
+    if (storeDataTab !== "costs" || !activeMonthId || !activeStoreId) return;
+    void reconcileCostEvidenceIssuesFromMonthEvidence();
+  }, [storeDataTab, activeMonthId, activeStoreId]);
+
   return (
     <main className="layout">
       <section className="panel">
-        <h1>월·매장 구성</h1>
-        <p className="muted">월을 만들고, 그 아래 매장을 추가합니다.</p>
+        <h1>Simple P&L</h1>
         {syncError && <p className="error">{syncError}</p>}
 
         <div className="row">
@@ -2811,7 +3023,7 @@ const App = () => {
 
         {activeMonth && (
           <>
-            <h3>매장 생성</h3>
+            <br />
             <div className="row">
               <select value={storeTemplateName} onChange={(e) => setStoreTemplateName(e.target.value)}>
                 <option value="">전월 매장 선택</option>
@@ -2830,7 +3042,7 @@ const App = () => {
                 />
               )}
               <button type="button" onClick={createStoreInMonth}>
-                신규 생성
+                매장 생성
               </button>
             </div>
             <div className="chip-wrap">
@@ -3676,7 +3888,7 @@ const App = () => {
                   {!activeStore ? (
                     <p className="muted">매장을 선택한 뒤 파일을 업로드할 수 있습니다.</p>
                   ) : (
-                    <div className="data-table-scroll">
+                    <div className="data-table-scroll data-table-scroll-costs">
                       {(activeStore.costEntryRows?.length ?? 0) > 0 && (
                         <table className="data-table data-table-costs">
                           <thead>
@@ -3690,32 +3902,75 @@ const App = () => {
                               <th>과세여부</th>
                               <th>결제여부</th>
                               <th>메모</th>
+                              <th>증빙발행</th>
                             </tr>
                           </thead>
                           <tbody>
                             {costRowsForDisplay.map((row) => (
                               <tr key={row.id}>
                                 <td>
-                                  {row.entryType === "manual" ? (
-                                    <button
-                                      type="button"
-                                      className="cost-date-link"
-                                      onClick={() => openEditCostEntryModal(row)}
-                                    >
-                                      {displayDateYmd(row.paymentDate)}
-                                    </button>
-                                  ) : (
-                                    displayDateYmd(row.paymentDate)
-                                  )}
+                                  <button
+                                    type="button"
+                                    className="cost-date-link"
+                                    onClick={() => openEditCostEntryModal(row)}
+                                  >
+                                    {displayDateYmd(row.paymentDate)}
+                                  </button>
                                 </td>
                                 <td>{row.expenseKind}</td>
                                 <td>{row.vendorName}</td>
                                 <td>{money.format(Math.round(row.totalAmount))}</td>
                                 <td>{money.format(Math.round(row.supplyAmount))}</td>
                                 <td>{money.format(Math.round(row.vat))}</td>
-                                <td>{row.taxMode}</td>
-                                <td>{row.payStatus}</td>
+                                <td>
+                                  <select
+                                    className="card-table-select"
+                                    value={row.taxMode}
+                                    onChange={(e) =>
+                                      void onCostTaxModeChange(row.id, e.target.value as CostTaxModeChoice)
+                                    }
+                                  >
+                                    {COST_TAX_MODE_OPTIONS.map((opt) => (
+                                      <option key={opt} value={opt}>
+                                        {opt}
+                                      </option>
+                                    ))}
+                                  </select>
+                                </td>
+                                <td>
+                                  <select
+                                    className={`card-table-select${
+                                      row.payStatus === "비결제" ? " card-table-select-missing" : ""
+                                    }`}
+                                    value={row.payStatus}
+                                    onChange={(e) =>
+                                      void onCostPayStatusChange(row.id, e.target.value as CostPayStatusChoice)
+                                    }
+                                  >
+                                    {COST_PAY_STATUS_OPTIONS.map((opt) => (
+                                      <option key={opt} value={opt}>
+                                        {opt}
+                                      </option>
+                                    ))}
+                                  </select>
+                                </td>
                                 <td>{row.memo}</td>
+                                <td>
+                                  <select
+                                    className={`card-table-select${row.evidenceIssue === "" ? " card-table-select-missing" : ""}`}
+                                    value={row.evidenceIssue}
+                                    onChange={(e) =>
+                                      onCostEvidenceIssueChange(row.id, e.target.value as CostEvidenceIssue)
+                                    }
+                                  >
+                                    <option value="">선택</option>
+                                    {COST_EVIDENCE_ISSUE_VALUE_OPTIONS.map((opt) => (
+                                      <option key={opt} value={opt}>
+                                        {opt}
+                                      </option>
+                                    ))}
+                                  </select>
+                                </td>
                               </tr>
                             ))}
                           </tbody>
@@ -4506,7 +4761,7 @@ const App = () => {
                   onChange={(e) => onCostEntryDraftChange({ payStatus: e.target.value })}
                 >
                   <option value="결제">결제</option>
-                  <option value="미결제">미결제</option>
+                  <option value="비결제">비결제</option>
                 </select>
               </label>
               <label className="cost-form-full">
