@@ -1160,6 +1160,8 @@ const App = () => {
   const [months, setMonths] = useState<MonthRecord[]>([]);
   const monthsRef = useRef(months);
   monthsRef.current = months;
+  /** 비용 탭 `reconcile` effect가 연속 실행될 때 오래된 비동기 결과가 저장되지 않도록 구분 */
+  const costEvidenceReconcileRunId = useRef(0);
   const [syncError, setSyncError] = useState("");
   const [monthLabel, setMonthLabel] = useState("");
   const [activeMonthId, setActiveMonthId] = useState<string | null>(null);
@@ -1553,6 +1555,27 @@ const App = () => {
     const profitTotal = Math.round(rows.reduce((sum, row) => sum + row.profit, 0));
     return { rows, salesTotal, profitTotal };
   }, [activeMonth, months]);
+
+  /** 낙관적 갱신 후 `saveState` 실패 시 ref·React 상태를 롤백 */
+  const applyMonthsAndSave = async (
+    next: MonthRecord[],
+  ): Promise<{ ok: true } | { ok: false; message: string }> => {
+    const previous = monthsRef.current;
+    monthsRef.current = next;
+    setMonths(next);
+    setSyncError("");
+    try {
+      await saveState(next);
+      return { ok: true };
+    } catch (error) {
+      monthsRef.current = previous;
+      setMonths(previous);
+      const message = error instanceof Error ? error.message : "Unknown save error";
+      setSyncError(message);
+      return { ok: false, message };
+    }
+  };
+
   const persistPnlAdjustments = async (
     revenueRows: PnlAdjustmentRow[],
     costRows: PnlAdjustmentRow[],
@@ -1571,17 +1594,7 @@ const App = () => {
         ),
       };
     });
-    monthsRef.current = next;
-    setMonths(next);
-    setSyncError("");
-    try {
-      await saveState(next);
-      return { ok: true };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Unknown save error";
-      setSyncError(message);
-      return { ok: false, message };
-    }
+    return applyMonthsAndSave(next);
   };
 
   const addPnlAdjustment = async (kind: "revenue" | "cost") => {
@@ -1691,17 +1704,7 @@ const App = () => {
         ),
       };
     });
-    monthsRef.current = next;
-    setMonths(next);
-    setSyncError("");
-    try {
-      await saveState(next);
-      return { ok: true };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Unknown save error";
-      setSyncError(message);
-      return { ok: false, message };
-    }
+    return applyMonthsAndSave(next);
   };
   const updateProductRowsLocal = (updater: (rows: ProductSummaryRow[]) => ProductSummaryRow[]) => {
     if (!activeMonthId || !activeStoreId) return;
@@ -1744,17 +1747,7 @@ const App = () => {
         ),
       };
     });
-    monthsRef.current = next;
-    setMonths(next);
-    setSyncError("");
-    try {
-      await saveState(next);
-      return { ok: true };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Unknown save error";
-      setSyncError(message);
-      return { ok: false, message };
-    }
+    return applyMonthsAndSave(next);
   };
 
   const persistAllCostRows = async (
@@ -1773,21 +1766,20 @@ const App = () => {
         ),
       };
     });
-    monthsRef.current = next;
-    setMonths(next);
-    setSyncError("");
-    try {
-      await saveState(next);
-      return { ok: true };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Unknown save error";
-      setSyncError(message);
-      return { ok: false, message };
-    }
+    return applyMonthsAndSave(next);
+  };
+
+  /** 현재 선택 월·매장(비용 탭 기준). `monthsRef`와 동기화된 스냅샷 */
+  const getActiveCostMonthStore = (): { month: MonthRecord; store: StoreRecord } | null => {
+    if (!activeMonthId || !activeStoreId) return null;
+    const month = monthsRef.current.find((m) => m.id === activeMonthId);
+    const store = month?.stores.find((s) => s.id === activeStoreId) ?? null;
+    if (!month || !store) return null;
+    return { month, store };
   };
 
   /** 현재 월 증빙 내역과 비교해 비용 행의 증빙발행 값을 맞춥니다. 콤보로 고정(`evidenceIssueLocked`)한 행은 계정·증빙 매칭 모두 건드리지 않습니다. 인건비·보험은 잠금이 없을 때만 자동으로 해당없음. */
-  const reconcileCostEvidenceIssuesFromMonthEvidence = async () => {
+  const reconcileCostEvidenceIssuesFromMonthEvidence = async (tabEffectRunId?: number) => {
     if (!activeMonthId || !activeStoreId) return;
     const month = monthsRef.current.find((m) => m.id === activeMonthId);
     const store = month?.stores.find((s) => s.id === activeStoreId);
@@ -1810,15 +1802,16 @@ const App = () => {
       return { ...row, evidenceIssue: nextIssue };
     });
     if (!changed) return;
+    if (tabEffectRunId !== undefined && tabEffectRunId !== costEvidenceReconcileRunId.current) {
+      return;
+    }
     await persistAllCostRows(nextRows);
   };
 
   const onCostEvidenceIssueChange = async (rowId: string, value: CostEvidenceIssue) => {
-    if (!activeMonthId || !activeStoreId) return;
-    const store = monthsRef.current
-      .find((m) => m.id === activeMonthId)
-      ?.stores.find((s) => s.id === activeStoreId);
-    if (!store) return;
+    const ctx = getActiveCostMonthStore();
+    if (!ctx) return;
+    const { store } = ctx;
     const existing = [...(store.costEntryRows ?? [])];
     const row = existing.find((r) => r.id === rowId);
     if (!row || row.evidenceIssue === value) return;
@@ -1836,11 +1829,9 @@ const App = () => {
   };
 
   const onCostTaxModeChange = async (rowId: string, value: CostTaxModeChoice) => {
-    if (!activeMonthId || !activeStoreId) return;
-    const store = monthsRef.current
-      .find((m) => m.id === activeMonthId)
-      ?.stores.find((s) => s.id === activeStoreId);
-    if (!store) return;
+    const ctx = getActiveCostMonthStore();
+    if (!ctx) return;
+    const { store } = ctx;
     const existing = [...(store.costEntryRows ?? [])];
     const row = existing.find((r) => r.id === rowId);
     if (!row || row.taxMode === value) return;
@@ -1859,11 +1850,9 @@ const App = () => {
   };
 
   const onCostPayStatusChange = async (rowId: string, value: CostPayStatusChoice) => {
-    if (!activeMonthId || !activeStoreId) return;
-    const store = monthsRef.current
-      .find((m) => m.id === activeMonthId)
-      ?.stores.find((s) => s.id === activeStoreId);
-    if (!store) return;
+    const ctx = getActiveCostMonthStore();
+    if (!ctx) return;
+    const { store } = ctx;
     const existing = [...(store.costEntryRows ?? [])];
     const row = existing.find((r) => r.id === rowId);
     if (!row || row.payStatus === value) return;
@@ -1902,17 +1891,7 @@ const App = () => {
         ),
       };
     });
-    monthsRef.current = next;
-    setMonths(next);
-    setSyncError("");
-    try {
-      await saveState(next);
-      return { ok: true };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Unknown save error";
-      setSyncError(message);
-      return { ok: false, message };
-    }
+    return applyMonthsAndSave(next);
   };
 
   const persistAllSalesRows = async (
@@ -1931,17 +1910,7 @@ const App = () => {
         ),
       };
     });
-    monthsRef.current = next;
-    setMonths(next);
-    setSyncError("");
-    try {
-      await saveState(next);
-      return { ok: true };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Unknown save error";
-      setSyncError(message);
-      return { ok: false, message };
-    }
+    return applyMonthsAndSave(next);
   };
 
   const persistStoreInventory = async (
@@ -1960,17 +1929,7 @@ const App = () => {
         ),
       };
     });
-    monthsRef.current = next;
-    setMonths(next);
-    setSyncError("");
-    try {
-      await saveState(next);
-      return { ok: true };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Unknown save error";
-      setSyncError(message);
-      return { ok: false, message };
-    }
+    return applyMonthsAndSave(next);
   };
 
   const persistCardRows = async (
@@ -1980,17 +1939,7 @@ const App = () => {
     const next = monthsRef.current.map((month) =>
       month.id === activeMonthId ? { ...month, cardHistoryRows: rows } : month,
     );
-    monthsRef.current = next;
-    setMonths(next);
-    setSyncError("");
-    try {
-      await saveState(next);
-      return { ok: true };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Unknown save error";
-      setSyncError(message);
-      return { ok: false, message };
-    }
+    return applyMonthsAndSave(next);
   };
   const persistEvidenceRows = async (
     rows: EvidenceRow[],
@@ -1999,17 +1948,7 @@ const App = () => {
     const next = monthsRef.current.map((month) =>
       month.id === activeMonthId ? { ...month, evidenceRows: rows } : month,
     );
-    monthsRef.current = next;
-    setMonths(next);
-    setSyncError("");
-    try {
-      await saveState(next);
-      return { ok: true };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Unknown save error";
-      setSyncError(message);
-      return { ok: false, message };
-    }
+    return applyMonthsAndSave(next);
   };
   const updateCardRowsLocal = (updater: (rows: CardHistoryRow[]) => CardHistoryRow[]) => {
     if (!activeMonthId) return;
@@ -2368,7 +2307,7 @@ const App = () => {
 
   const onCostEntryDelete = async () => {
     if (!activeStore || !costEntryEditingId) return;
-    if (!window.confirm("해당 비용을 삭제하사겠습니까?")) return;
+    if (!window.confirm("해당 비용을 삭제하시겠습니까?")) return;
     setCostEntryBusy(true);
     const existing = [...(activeStore.costEntryRows ?? [])];
     const next = existing.filter((row) => row.id !== costEntryEditingId);
@@ -2864,23 +2803,20 @@ const App = () => {
         stores: m.stores.map((s) => (s.id === store.id ? { ...s, costEntryRows: nextCostRows } : s)),
       };
     });
-    monthsRef.current = next;
-    setMonths(next);
-    setSyncError("");
     try {
-      await saveState(next);
-      setEvidenceTableSaveMessage("비용 등록 완료");
-      setEvidenceTableSaveMessageType("ok");
-      window.setTimeout(() => {
-        setEvidenceTableSaveMessage("");
-        setEvidenceTableSaveMessageType("");
-      }, 2000);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Unknown save error";
-      setSyncError(message);
-      setEvidenceTableSaveMessage(`비용 등록 실패: ${message}`);
-      setEvidenceTableSaveMessageType("error");
-      window.alert(message);
+      const result = await applyMonthsAndSave(next);
+      if (result.ok) {
+        setEvidenceTableSaveMessage("비용 등록 완료");
+        setEvidenceTableSaveMessageType("ok");
+        window.setTimeout(() => {
+          setEvidenceTableSaveMessage("");
+          setEvidenceTableSaveMessageType("");
+        }, 2000);
+      } else {
+        setEvidenceTableSaveMessage(`비용 등록 실패: ${result.message}`);
+        setEvidenceTableSaveMessageType("error");
+        window.alert(result.message);
+      }
     } finally {
       setEvidenceCostRegisteringId(null);
     }
@@ -2982,7 +2918,8 @@ const App = () => {
 
   useEffect(() => {
     if (storeDataTab !== "costs" || !activeMonthId || !activeStoreId) return;
-    void reconcileCostEvidenceIssuesFromMonthEvidence();
+    const runId = ++costEvidenceReconcileRunId.current;
+    void reconcileCostEvidenceIssuesFromMonthEvidence(runId);
   }, [storeDataTab, activeMonthId, activeStoreId]);
 
   return (
