@@ -726,6 +726,26 @@ const mergeAndSortEvidenceRows = (existing: EvidenceRow[], incoming: EvidenceRow
   return rows;
 };
 
+/** 동일 증빙구분·승인번호가 있으면 제거한 뒤, 해당 증빙구분 블록의 맨 아래에 새 행을 붙입니다. */
+const appendEvidenceRowAtEndOfTypeSection = (existing: EvidenceRow[], newRow: EvidenceRow): EvidenceRow[] => {
+  const keys =
+    newRow.approvalNumber.trim() !== ""
+      ? new Set<string>([`${newRow.evidenceType}::${newRow.approvalNumber}`])
+      : new Set<string>();
+  const filtered = existing.filter((r) => {
+    if (keys.size === 0) return true;
+    if (!r.approvalNumber.trim()) return true;
+    const key = `${r.evidenceType}::${r.approvalNumber}`;
+    return !keys.has(key);
+  });
+  const buckets: [EvidenceRow[], EvidenceRow[], EvidenceRow[]] = [[], [], []];
+  for (const r of filtered) {
+    buckets[EVIDENCE_TYPE_ORDER[r.evidenceType]].push(r);
+  }
+  buckets[EVIDENCE_TYPE_ORDER[newRow.evidenceType]].push(newRow);
+  return [...buckets[0], ...buckets[1], ...buckets[2]];
+};
+
 const calcEvidenceSplit = (type: EvidenceRow["evidenceType"], totalRaw: string) => {
   const total = Math.round(toNumber(totalRaw));
   if (type === "세금계산서") {
@@ -928,6 +948,28 @@ const displayDateYmd = (value: string): string => {
   if (compact) return `${compact[1]}-${compact[2]}-${compact[3]}`;
   return v;
 };
+
+type EvidenceSingleEntryDraft = {
+  date: string;
+  approvalNumber: string;
+  vendorName: string;
+  totalAmount: string;
+  supplyAmount: string;
+  taxAmount: string;
+  expenseAccount: string;
+  appliedStore: string;
+};
+
+const emptyEvidenceSingleEntryDraft = (): EvidenceSingleEntryDraft => ({
+  date: todayYmd(),
+  approvalNumber: "",
+  vendorName: "",
+  totalAmount: "",
+  supplyAmount: "",
+  taxAmount: "",
+  expenseAccount: "",
+  appliedStore: "",
+});
 
 const COST_ACCOUNT_OPTIONS = [
   "광고홍보",
@@ -1230,6 +1272,11 @@ const App = () => {
   const [evidenceModalType, setEvidenceModalType] = useState<EvidenceRow["evidenceType"]>("세금계산서");
   const [evidenceParsedRows, setEvidenceParsedRows] = useState<EvidenceRow[] | null>(null);
   const evidenceModalFileInputRef = useRef<HTMLInputElement>(null);
+  const [evidenceSingleEntryOpen, setEvidenceSingleEntryOpen] = useState(false);
+  const [evidenceSingleEntryBusy, setEvidenceSingleEntryBusy] = useState(false);
+  const [evidenceSingleEntryDraft, setEvidenceSingleEntryDraft] = useState<EvidenceSingleEntryDraft>(() =>
+    emptyEvidenceSingleEntryDraft(),
+  );
   const [evidenceTableSaveBusy, setEvidenceTableSaveBusy] = useState(false);
   const [evidenceTableSaveMessage, setEvidenceTableSaveMessage] = useState("");
   const [evidenceTableSaveMessageType, setEvidenceTableSaveMessageType] = useState<"ok" | "error" | "">("");
@@ -1237,6 +1284,8 @@ const App = () => {
   const [evidenceSplitRowId, setEvidenceSplitRowId] = useState<string | null>(null);
   const [evidenceSplitTotal, setEvidenceSplitTotal] = useState("");
   const [evidenceSplitBusy, setEvidenceSplitBusy] = useState(false);
+  const [evidenceDeleteRowId, setEvidenceDeleteRowId] = useState<string | null>(null);
+  const [evidenceDeleteBusy, setEvidenceDeleteBusy] = useState(false);
   const [evidenceCostRegisteringId, setEvidenceCostRegisteringId] = useState<string | null>(null);
   const [monthCommonTab, setMonthCommonTab] = useState<"cards" | "evidence" | "overall">("cards");
   const [monthCommonCollapsed, setMonthCommonCollapsed] = useState(true);
@@ -1420,6 +1469,10 @@ const App = () => {
     if (!evidenceSplitTarget) return { totalAmount: 0, supplyAmount: 0, taxAmount: 0 };
     return calcEvidenceSplit(evidenceSplitTarget.evidenceType, evidenceSplitTotal);
   }, [evidenceSplitTarget, evidenceSplitTotal]);
+  const evidenceDeleteTarget = useMemo(
+    () => (activeMonth?.evidenceRows ?? []).find((r) => r.id === evidenceDeleteRowId) ?? null,
+    [activeMonth?.evidenceRows, evidenceDeleteRowId],
+  );
   const storeNameOptions = useMemo(() => {
     const names = months.flatMap((m) => m.stores.map((s) => s.name.trim())).filter(Boolean);
     return [...new Set(names)].sort((a, b) => a.localeCompare(b, "en"));
@@ -1986,6 +2039,50 @@ const App = () => {
     );
     return applyMonthsAndSave(next);
   };
+
+  const onEvidenceSingleEntryOk = async () => {
+    if (!activeMonthId || evidenceSingleEntryBusy) return;
+    const d = evidenceSingleEntryDraft;
+    const dateRaw = displayDateYmd(d.date.trim());
+    if (!dateRaw) {
+      window.alert("날짜를 입력해 주세요.");
+      return;
+    }
+    if (!d.vendorName.trim()) {
+      window.alert("업체명을 입력해 주세요.");
+      return;
+    }
+    const date = formatBusinessDay(dateRaw) || dateRaw;
+    const approvalNumber = d.approvalNumber.trim();
+    let taxAmount = toNumber(d.taxAmount);
+    if (evidenceModalType === "계산서") taxAmount = 0;
+    const newRow: EvidenceRow = {
+      id: nowId(),
+      date,
+      approvalNumber,
+      vendorName: d.vendorName.trim(),
+      totalAmount: Math.round(toNumber(d.totalAmount)),
+      supplyAmount: Math.round(toNumber(d.supplyAmount)),
+      taxAmount: Math.round(taxAmount),
+      evidenceType: evidenceModalType,
+      expenseAccount: d.expenseAccount.trim(),
+      appliedStore: d.appliedStore.trim(),
+      costRegisterChecked: false,
+    };
+    const month = monthsRef.current.find((m) => m.id === activeMonthId);
+    if (!month) return;
+    setEvidenceSingleEntryBusy(true);
+    const merged = appendEvidenceRowAtEndOfTypeSection(month.evidenceRows ?? [], newRow);
+    const result = await persistEvidenceRows(merged);
+    setEvidenceSingleEntryBusy(false);
+    if (!result.ok) {
+      window.alert(result.message);
+      return;
+    }
+    setEvidenceModalProgress("단건을 추가해 저장했습니다.");
+    setEvidenceSingleEntryOpen(false);
+  };
+
   const updateCardRowsLocal = (updater: (rows: CardHistoryRow[]) => CardHistoryRow[]) => {
     if (!activeMonthId) return;
     const next = monthsRef.current.map((month) => {
@@ -2676,12 +2773,14 @@ const App = () => {
     setEvidenceModalPhase("pick");
     setEvidenceModalProgress("");
     setEvidenceParsedRows(null);
+    setEvidenceSingleEntryOpen(false);
     if (evidenceModalFileInputRef.current) evidenceModalFileInputRef.current.value = "";
   }, []);
 
   const openEvidenceUploadModal = (type: EvidenceRow["evidenceType"]) => {
     if (!activeMonthId || !activeMonth) return;
     if (evidenceModalOpen) return;
+    setEvidenceSingleEntryOpen(false);
     setEvidenceModalType(type);
     setEvidenceModalOpen(true);
     setEvidenceModalPhase("pick");
@@ -2689,6 +2788,18 @@ const App = () => {
     setEvidenceParsedRows(null);
     if (evidenceModalFileInputRef.current) evidenceModalFileInputRef.current.value = "";
   };
+
+  const openEvidenceSingleEntryModal = useCallback(() => {
+    const d = emptyEvidenceSingleEntryDraft();
+    if (evidenceModalType === "계산서") d.taxAmount = "0";
+    setEvidenceSingleEntryDraft(d);
+    setEvidenceSingleEntryOpen(true);
+  }, [evidenceModalType]);
+
+  const closeEvidenceSingleEntryModal = useCallback(() => {
+    if (evidenceSingleEntryBusy) return;
+    setEvidenceSingleEntryOpen(false);
+  }, [evidenceSingleEntryBusy]);
 
   const closeEvidenceModal = useCallback(() => {
     if (evidenceModalPhase === "reading" || evidenceModalPhase === "saving") return;
@@ -2702,11 +2813,15 @@ const App = () => {
     if (!evidenceModalOpen) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
+      if (evidenceSingleEntryOpen) {
+        if (!evidenceSingleEntryBusy) setEvidenceSingleEntryOpen(false);
+        return;
+      }
       closeEvidenceModal();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [evidenceModalOpen, closeEvidenceModal]);
+  }, [evidenceModalOpen, evidenceSingleEntryOpen, evidenceSingleEntryBusy, closeEvidenceModal]);
 
   const onEvidenceModalFileChange = async (e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0] ?? null;
@@ -2878,6 +2993,46 @@ const App = () => {
       setEvidenceTableSaveMessageType("");
     }, 2000);
   };
+
+  const closeEvidenceDeleteModal = useCallback(() => {
+    if (evidenceDeleteBusy) return;
+    setEvidenceDeleteRowId(null);
+  }, [evidenceDeleteBusy]);
+
+  const openEvidenceDeleteModal = (row: EvidenceRow) => {
+    setEvidenceDeleteRowId(row.id);
+  };
+
+  const onEvidenceDeleteConfirm = async () => {
+    if (!activeMonthId || !evidenceDeleteRowId || evidenceDeleteBusy) return;
+    const month = monthsRef.current.find((m) => m.id === activeMonthId);
+    if (!month) return;
+    setEvidenceDeleteBusy(true);
+    const nextRows = (month.evidenceRows ?? []).filter((r) => r.id !== evidenceDeleteRowId);
+    const result = await persistEvidenceRows(nextRows);
+    setEvidenceDeleteBusy(false);
+    if (!result.ok) {
+      window.alert(result.message);
+      return;
+    }
+    setEvidenceDeleteRowId(null);
+  };
+
+  useEffect(() => {
+    if (!evidenceDeleteRowId) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      if (evidenceDeleteBusy) return;
+      setEvidenceDeleteRowId(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [evidenceDeleteRowId, evidenceDeleteBusy]);
+
+  useEffect(() => {
+    if (!evidenceDeleteRowId || evidenceDeleteBusy) return;
+    if (!evidenceDeleteTarget) setEvidenceDeleteRowId(null);
+  }, [evidenceDeleteRowId, evidenceDeleteTarget, evidenceDeleteBusy]);
 
   const openEvidenceSplitModal = (row: EvidenceRow) => {
     setEvidenceSplitRowId(row.id);
@@ -3304,7 +3459,15 @@ const App = () => {
                           <tbody>
                             {evidenceRowsForDisplay.map((row) => (
                               <tr key={row.id}>
-                                <td>{displayDateYmd(row.date)}</td>
+                                <td>
+                                  <button
+                                    type="button"
+                                    className="cost-date-link"
+                                    onClick={() => openEvidenceDeleteModal(row)}
+                                  >
+                                    {displayDateYmd(row.date)}
+                                  </button>
+                                </td>
                                 <td>{row.approvalNumber}</td>
                                 <td>{row.vendorName}</td>
                                 <td>{money.format(Math.round(row.totalAmount))}</td>
@@ -4303,7 +4466,9 @@ const App = () => {
           className="modal-backdrop"
           role="presentation"
           onMouseDown={(e) => {
-            if (e.target === e.currentTarget) closeEvidenceModal();
+            if (e.target !== e.currentTarget) return;
+            if (evidenceSingleEntryOpen) return;
+            closeEvidenceModal();
           }}
         >
           <div
@@ -4329,12 +4494,18 @@ const App = () => {
               {evidenceModalProgress}
             </p>
             {(evidenceModalPhase === "pick" || evidenceModalPhase === "error") && (
-              <div className="modal-actions">
-                <button type="button" onClick={() => evidenceModalFileInputRef.current?.click()}>
-                  파일 선택
-                </button>
-                <button type="button" className="btn-secondary" onClick={closeEvidenceModal}>
-                  취소
+              <div className="modal-actions evidence-modal-actions-bar">
+                <div className="evidence-modal-actions-left">
+                  <button type="button" onClick={() => evidenceModalFileInputRef.current?.click()}>
+                    파일 선택
+                  </button>
+                  <button type="button" className="btn-secondary" onClick={closeEvidenceModal}>
+                    취소
+                  </button>
+                </div>
+                <span className="evidence-modal-actions-spacer" aria-hidden={true} />
+                <button type="button" onClick={openEvidenceSingleEntryModal}>
+                  단건 등록
                 </button>
               </div>
             )}
@@ -4380,6 +4551,148 @@ const App = () => {
         </div>
       )}
 
+      {evidenceModalOpen && evidenceSingleEntryOpen && activeMonth && (
+        <div
+          className="modal-backdrop modal-backdrop-stacked"
+          role="presentation"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) closeEvidenceSingleEntryModal();
+          }}
+        >
+          <div
+            className="modal-panel modal-panel-evidence-single"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="evidence-single-entry-title"
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <div className="modal-header">
+              <h3 id="evidence-single-entry-title">증빙 단건 등록</h3>
+              <button
+                type="button"
+                className="modal-close"
+                aria-label="닫기"
+                disabled={evidenceSingleEntryBusy}
+                onClick={closeEvidenceSingleEntryModal}
+              >
+                ×
+              </button>
+            </div>
+            <p className="muted" style={{ marginBottom: 12 }}>
+              증빙구분: <strong>{evidenceModalType}</strong>
+            </p>
+            <div className="cost-form-grid">
+              <label>
+                날짜
+                <input
+                  type="date"
+                  value={displayDateYmd(evidenceSingleEntryDraft.date)}
+                  onChange={(e) =>
+                    setEvidenceSingleEntryDraft((prev) => ({ ...prev, date: e.target.value }))
+                  }
+                />
+              </label>
+              <label>
+                승인번호
+                <input
+                  value={evidenceSingleEntryDraft.approvalNumber}
+                  onChange={(e) =>
+                    setEvidenceSingleEntryDraft((prev) => ({ ...prev, approvalNumber: e.target.value }))
+                  }
+                />
+              </label>
+              <label className="cost-form-full">
+                업체명
+                <input
+                  value={evidenceSingleEntryDraft.vendorName}
+                  onChange={(e) =>
+                    setEvidenceSingleEntryDraft((prev) => ({ ...prev, vendorName: e.target.value }))
+                  }
+                />
+              </label>
+              <label>
+                합계금액
+                <input
+                  value={evidenceSingleEntryDraft.totalAmount}
+                  onChange={(e) =>
+                    setEvidenceSingleEntryDraft((prev) => ({ ...prev, totalAmount: e.target.value }))
+                  }
+                />
+              </label>
+              <label>
+                공급가액
+                <input
+                  value={evidenceSingleEntryDraft.supplyAmount}
+                  onChange={(e) =>
+                    setEvidenceSingleEntryDraft((prev) => ({ ...prev, supplyAmount: e.target.value }))
+                  }
+                />
+              </label>
+              <label>
+                세액
+                <input
+                  value={evidenceModalType === "계산서" ? "0" : evidenceSingleEntryDraft.taxAmount}
+                  disabled={evidenceModalType === "계산서"}
+                  onChange={(e) =>
+                    setEvidenceSingleEntryDraft((prev) => ({ ...prev, taxAmount: e.target.value }))
+                  }
+                />
+              </label>
+              <label>
+                비용계정
+                <select
+                  value={evidenceSingleEntryDraft.expenseAccount}
+                  onChange={(e) =>
+                    setEvidenceSingleEntryDraft((prev) => ({ ...prev, expenseAccount: e.target.value }))
+                  }
+                >
+                  <option value="">선택</option>
+                  {COST_ACCOUNT_OPTIONS.map((opt) => (
+                    <option key={opt} value={opt}>
+                      {opt}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                적용매장
+                <select
+                  value={evidenceSingleEntryDraft.appliedStore}
+                  onChange={(e) =>
+                    setEvidenceSingleEntryDraft((prev) => ({ ...prev, appliedStore: e.target.value }))
+                  }
+                >
+                  <option value="">선택</option>
+                  {storeNameOptions.map((name) => (
+                    <option key={name} value={name}>
+                      {name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            <div className="modal-actions">
+              <button
+                type="button"
+                className="btn-save"
+                disabled={evidenceSingleEntryBusy}
+                onClick={() => void onEvidenceSingleEntryOk()}
+              >
+                OK
+              </button>
+              <button
+                type="button"
+                className="btn-secondary"
+                disabled={evidenceSingleEntryBusy}
+                onClick={closeEvidenceSingleEntryModal}
+              >
+                취소
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {evidenceSplitModalOpen && evidenceSplitTarget && (
         <div
           className="modal-backdrop"
@@ -4420,6 +4733,71 @@ const App = () => {
                 저장
               </button>
               <button type="button" className="btn-secondary" disabled={evidenceSplitBusy} onClick={closeEvidenceSplitModal}>
+                취소
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {evidenceDeleteRowId && evidenceDeleteTarget && (
+        <div
+          className="modal-backdrop"
+          role="presentation"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) closeEvidenceDeleteModal();
+          }}
+        >
+          <div
+            className="modal-panel"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="evidence-delete-modal-title"
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <div className="modal-header">
+              <h3 id="evidence-delete-modal-title">증빙 내역 삭제</h3>
+              <button
+                type="button"
+                className="modal-close"
+                aria-label="닫기"
+                disabled={evidenceDeleteBusy}
+                onClick={closeEvidenceDeleteModal}
+              >
+                ×
+              </button>
+            </div>
+            <p className="modal-progress" style={{ minHeight: "auto" }}>
+              아래 증빙 내역을 삭제하시겠습니까? 삭제 후에는 되돌릴 수 없습니다.
+            </p>
+            <div className="cost-form-grid" style={{ pointerEvents: "none", opacity: 0.92 }}>
+              <label>
+                날짜
+                <input readOnly value={displayDateYmd(evidenceDeleteTarget.date)} />
+              </label>
+              <label>
+                증빙구분
+                <input readOnly value={evidenceDeleteTarget.evidenceType} />
+              </label>
+              <label>
+                승인번호
+                <input readOnly value={evidenceDeleteTarget.approvalNumber} />
+              </label>
+              <label className="cost-form-full">
+                업체명
+                <input readOnly value={evidenceDeleteTarget.vendorName} />
+              </label>
+            </div>
+            <div className="modal-actions">
+              <button
+                type="button"
+                className="btn-danger"
+                disabled={evidenceDeleteBusy}
+                onClick={() => void onEvidenceDeleteConfirm()}
+              >
+                {evidenceDeleteBusy ? "삭제 중…" : "삭제"}
+              </button>
+              <button type="button" className="btn-secondary" disabled={evidenceDeleteBusy} onClick={closeEvidenceDeleteModal}>
                 취소
               </button>
             </div>

@@ -421,6 +421,35 @@ button {
   background: rgba(15, 23, 42, 0.45);
 }
 
+.modal-backdrop-stacked {
+  z-index: 60;
+}
+
+.modal-panel-evidence-single {
+  width: min(480px, 100%);
+  max-height: min(90vh, 640px);
+}
+
+.evidence-modal-actions-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  width: 100%;
+  gap: 8px;
+}
+
+.evidence-modal-actions-left {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.evidence-modal-actions-spacer {
+  flex: 1 1 8px;
+  min-width: 0;
+}
+
 .modal-panel {
   width: min(420px, 100%);
   max-height: min(90vh, 520px);
