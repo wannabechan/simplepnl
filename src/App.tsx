@@ -890,6 +890,105 @@ const monthLabelYear = (label: string): string => {
   return m?.[1] ?? "";
 };
 
+/** 월 라벨(예: 2026-04, 2026년 4월)에서 연·월 추출 */
+const parseMonthLabelToYm = (label: string): { y: number; m: number } | null => {
+  const t = label.trim();
+  if (!t) return null;
+  const dash = t.match(/^(\d{4})-(\d{1,2})(?:-\d{1,2})?$/);
+  if (dash) {
+    const y = Number(dash[1]);
+    const mo = Number(dash[2]);
+    if (Number.isFinite(y) && mo >= 1 && mo <= 12) return { y, m: mo };
+  }
+  const kr = t.match(/^(\d{4})\s*년\s*(\d{1,2})\s*월/);
+  if (kr) {
+    const y = Number(kr[1]);
+    const mo = Number(kr[2]);
+    if (Number.isFinite(y) && mo >= 1 && mo <= 12) return { y, m: mo };
+  }
+  const compact = t.match(/^(\d{4})(\d{2})$/);
+  if (compact) {
+    const y = Number(compact[1]);
+    const mo = Number(compact[2]);
+    if (Number.isFinite(y) && mo >= 1 && mo <= 12) return { y, m: mo };
+  }
+  return null;
+};
+
+const ymMinusMonths = (ym: { y: number; m: number }, delta: number): { y: number; m: number } => {
+  const idx = ym.y * 12 + (ym.m - 1) - delta;
+  if (idx < 0) return { y: 0, m: 1 };
+  return { y: Math.floor(idx / 12), m: (idx % 12) + 1 };
+};
+
+const getPreviousTwoMonthRecords = (allMonths: MonthRecord[], activeMonthId: string): MonthRecord[] => {
+  const active = allMonths.find((x) => x.id === activeMonthId);
+  if (!active) return [];
+  const cur = parseMonthLabelToYm(active.label);
+  if (!cur) return [];
+  const t1 = ymMinusMonths(cur, 1);
+  const t2 = ymMinusMonths(cur, 2);
+  const out: MonthRecord[] = [];
+  for (const month of allMonths) {
+    const p = parseMonthLabelToYm(month.label);
+    if (!p) continue;
+    if ((p.y === t1.y && p.m === t1.m) || (p.y === t2.y && p.m === t2.m)) {
+      out.push(month);
+    }
+  }
+  return out;
+};
+
+const TRIPLE_SIG_SEP = "\u0000";
+
+/** 직전 월들의 카드 행에서, 이용가맹점별 (비용계정+적용매장) 조합이 하나일 때만 매핑 */
+const buildCardAccountStoreInferMap = (pastRows: CardHistoryRow[]): Map<string, { expenseAccount: string; appliedStore: string }> => {
+  const sigByMerchant = new Map<string, Set<string>>();
+  for (const r of pastRows) {
+    const mk = normalize(r.merchant);
+    if (!mk) continue;
+    const ea = (r.expenseAccount ?? "").trim();
+    const st = (r.appliedStore ?? "").trim();
+    const sig = `${ea}${TRIPLE_SIG_SEP}${st}`;
+    if (!sigByMerchant.has(mk)) sigByMerchant.set(mk, new Set());
+    sigByMerchant.get(mk)!.add(sig);
+  }
+  const out = new Map<string, { expenseAccount: string; appliedStore: string }>();
+  for (const [mk, set] of sigByMerchant) {
+    if (set.size !== 1) continue;
+    const only = [...set][0]!;
+    const i = only.indexOf(TRIPLE_SIG_SEP);
+    const expenseAccount = i >= 0 ? only.slice(0, i) : only;
+    const appliedStore = i >= 0 ? only.slice(i + TRIPLE_SIG_SEP.length) : "";
+    out.set(mk, { expenseAccount, appliedStore });
+  }
+  return out;
+};
+
+/** 직전 월들의 증빙 행에서, 업체명별 (비용계정+적용매장) 조합이 하나일 때만 매핑 */
+const buildEvidenceAccountStoreInferMap = (pastRows: EvidenceRow[]): Map<string, { expenseAccount: string; appliedStore: string }> => {
+  const sigByVendor = new Map<string, Set<string>>();
+  for (const r of pastRows) {
+    const vk = normalize(r.vendorName);
+    if (!vk) continue;
+    const ea = (r.expenseAccount ?? "").trim();
+    const st = (r.appliedStore ?? "").trim();
+    const sig = `${ea}${TRIPLE_SIG_SEP}${st}`;
+    if (!sigByVendor.has(vk)) sigByVendor.set(vk, new Set());
+    sigByVendor.get(vk)!.add(sig);
+  }
+  const out = new Map<string, { expenseAccount: string; appliedStore: string }>();
+  for (const [vk, set] of sigByVendor) {
+    if (set.size !== 1) continue;
+    const only = [...set][0]!;
+    const i = only.indexOf(TRIPLE_SIG_SEP);
+    const expenseAccount = i >= 0 ? only.slice(0, i) : only;
+    const appliedStore = i >= 0 ? only.slice(i + TRIPLE_SIG_SEP.length) : "";
+    out.set(vk, { expenseAccount, appliedStore });
+  }
+  return out;
+};
+
 const calcMonthOverallRows = (month: MonthRecord) =>
   month.stores.map((store) => {
     const baseSales = Math.round((store.salesSummaryRows ?? []).reduce((sum, row) => sum + row.supplyAmount, 0));
@@ -2766,6 +2865,32 @@ const App = () => {
     updateCardRowsLocal((rows) => rows.map((r) => (r.id === rowId ? { ...r, ...patch } : r)));
   };
 
+  const onCardInferAccountStoreFromHistory = () => {
+    if (!activeMonthId || !activeMonth) return;
+    const pastMonths = getPreviousTwoMonthRecords(monthsRef.current, activeMonthId);
+    const pastRows = pastMonths.flatMap((m) => m.cardHistoryRows ?? []);
+    const inferMap = buildCardAccountStoreInferMap(pastRows);
+    let updated = 0;
+    updateCardRowsLocal((rows) =>
+      rows.map((row) => {
+        const mk = normalize(row.merchant);
+        if (!mk) return row;
+        const inf = inferMap.get(mk);
+        if (!inf) return row;
+        const next = { ...row, expenseAccount: inf.expenseAccount, appliedStore: inf.appliedStore };
+        if ((row.expenseAccount ?? "").trim() !== next.expenseAccount || (row.appliedStore ?? "").trim() !== next.appliedStore) {
+          updated += 1;
+        }
+        return next;
+      }),
+    );
+    window.alert(
+      updated > 0
+        ? `${updated}건에 비용 계정·적용 매장을 반영했습니다. 하단 [저장]으로 확정해 주세요.`
+        : "직전 2개월 데이터에서 고유하게 추정된 이용가맹점이 없거나, 바꿀 값이 없습니다.",
+    );
+  };
+
   const onCardTableSave = async () => {
     if (!activeMonth) return;
     setCardTableSaveBusy(true);
@@ -2989,6 +3114,32 @@ const App = () => {
     } finally {
       setEvidenceCostRegisteringId(null);
     }
+  };
+
+  const onEvidenceInferAccountStoreFromHistory = () => {
+    if (!activeMonthId || !activeMonth) return;
+    const pastMonths = getPreviousTwoMonthRecords(monthsRef.current, activeMonthId);
+    const pastRows = pastMonths.flatMap((m) => m.evidenceRows ?? []);
+    const inferMap = buildEvidenceAccountStoreInferMap(pastRows);
+    let updated = 0;
+    updateEvidenceRowsLocal((rows) =>
+      rows.map((row) => {
+        const vk = normalize(row.vendorName);
+        if (!vk) return row;
+        const inf = inferMap.get(vk);
+        if (!inf) return row;
+        const next = { ...row, expenseAccount: inf.expenseAccount, appliedStore: inf.appliedStore };
+        if ((row.expenseAccount ?? "").trim() !== next.expenseAccount || (row.appliedStore ?? "").trim() !== next.appliedStore) {
+          updated += 1;
+        }
+        return next;
+      }),
+    );
+    window.alert(
+      updated > 0
+        ? `${updated}건에 비용계정·적용매장을 반영했습니다. 하단 [저장]으로 확정해 주세요.`
+        : "직전 2개월 데이터에서 고유하게 추정된 업체명이 없거나, 바꿀 값이 없습니다.",
+    );
   };
 
   const onEvidenceTableSave = async () => {
@@ -3333,6 +3484,20 @@ const App = () => {
                           )}
                         </span>
                       )}
+                      <span className="sales-heading-grow" />
+                      <button
+                        type="button"
+                        className="btn-secondary"
+                        disabled={
+                          cardModalOpen ||
+                          evidenceModalOpen ||
+                          cardTableSaveBusy ||
+                          cardRowsForDisplay.length === 0
+                        }
+                        onClick={onCardInferAccountStoreFromHistory}
+                      >
+                        계정/매장 추정 입력
+                      </button>
                     </div>
                     {(cardRowsForDisplay.length ?? 0) > 0 && (
                       <table className="data-table">
@@ -3454,6 +3619,20 @@ const App = () => {
                         onClick={() => openEvidenceUploadModal("기타증빙")}
                       >
                         기타증빙
+                      </button>
+                      <span className="sales-heading-grow" />
+                      <button
+                        type="button"
+                        className="btn-secondary"
+                        disabled={
+                          evidenceModalOpen ||
+                          cardModalOpen ||
+                          evidenceTableSaveBusy ||
+                          evidenceRowsForDisplay.length === 0
+                        }
+                        onClick={onEvidenceInferAccountStoreFromHistory}
+                      >
+                        계정/매장 추정 입력
                       </button>
                     </div>
                     {(evidenceRowsForDisplay.length ?? 0) > 0 && (
