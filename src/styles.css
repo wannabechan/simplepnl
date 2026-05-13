@@ -677,6 +677,11 @@ button {
   font-size: 12px;
 }
 
+#store-panel-sales .data-table button.btn-xs-sales-manual-edit {
+  padding: calc(4px * 0.8) calc(8px * 0.8);
+  font-size: calc(12px * 0.8);
+}
+
 #month-panel-evidence .evidence-register-disabled {
   background: #9ca3af;
   border-color: #9ca3af;

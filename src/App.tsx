@@ -3850,13 +3850,13 @@ const App = () => {
                                     <>
                                       <button
                                         type="button"
-                                        className="btn-secondary btn-xs"
+                                        className="btn-secondary btn-xs btn-xs-sales-manual-edit"
                                         disabled={salesEntryBusy || salesEntryModalOpen}
                                         onClick={() => openEditSalesEntryModal(row)}
                                       >
                                         수정
                                       </button>
-                                      <span aria-hidden={true}>{" "}</span>
+                                      {"\u00A0\u00A0"}
                                     </>
                                   )}
                                   <button
