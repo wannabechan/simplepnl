@@ -1621,7 +1621,7 @@ const App = () => {
     }
     const normalizedCostByAccount = Array.from(costByAccountMap.entries())
       .map(([label, amount]) => ({ label, amount: Math.round(amount) }))
-      .sort((a, b) => b.amount - a.amount || a.label.localeCompare(b.label, "ko"));
+      .sort((a, b) => a.label.localeCompare(b.label, "ko"));
 
     const profitSupply = salesTotalSupply - costTotalSupply;
     const revenueAdjustments = [...(activeStore?.pnlRevenueAdjustments ?? [])];
