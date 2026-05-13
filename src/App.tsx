@@ -989,6 +989,49 @@ const buildEvidenceAccountStoreInferMap = (pastRows: EvidenceRow[]): Map<string,
   return out;
 };
 
+type PnlCostDetailRow = {
+  id: string;
+  name: string;
+  supplyAmount: number;
+  costKind: "비용등록" | "카드등록";
+};
+
+const buildPnlCostDetailRows = (
+  accountLabel: string,
+  storeName: string,
+  costRows: CostEntryRow[],
+  cardRows: CardHistoryRow[],
+): PnlCostDetailRow[] => {
+  const accountNorm = normalize(accountLabel);
+  const storeNorm = normalize(storeName);
+  const rows: PnlCostDetailRow[] = [];
+  for (const row of costRows) {
+    const key = (row.expenseKind ?? "").trim() || "미분류";
+    if (normalize(key) !== accountNorm) continue;
+    rows.push({
+      id: `cost-${row.id}`,
+      name: row.vendorName.trim() || "-",
+      supplyAmount: Math.round(row.supplyAmount),
+      costKind: "비용등록",
+    });
+  }
+  for (const row of cardRows) {
+    if (normalize(row.appliedStore ?? "") !== storeNorm) continue;
+    const key = (row.expenseAccount ?? "").trim() || "미분류";
+    if (normalize(key) !== accountNorm) continue;
+    rows.push({
+      id: `card-${row.id}`,
+      name: row.merchant.trim() || "-",
+      supplyAmount: Math.round(row.approvalAmount / 1.1),
+      costKind: "카드등록",
+    });
+  }
+  rows.sort(
+    (a, b) => a.costKind.localeCompare(b.costKind, "ko") || a.name.localeCompare(b.name, "ko"),
+  );
+  return rows;
+};
+
 const calcMonthOverallRows = (month: MonthRecord) =>
   month.stores.map((store) => {
     const baseSales = Math.round((store.salesSummaryRows ?? []).reduce((sum, row) => sum + row.supplyAmount, 0));
@@ -1418,6 +1461,7 @@ const App = () => {
   const [pnlAdjustmentSaveBusy, setPnlAdjustmentSaveBusy] = useState(false);
   const [pnlAdjustmentMessage, setPnlAdjustmentMessage] = useState("");
   const [pnlAdjustmentMessageType, setPnlAdjustmentMessageType] = useState<"ok" | "error" | "">("");
+  const [pnlCostDetailAccount, setPnlCostDetailAccount] = useState<string | null>(null);
   const pnlDefaultAppliedStoreIdsRef = useRef<Set<string>>(new Set());
   /** 첫 loadState 완료 여부 (로컬/배포 최초 접속 로딩) */
   const [remoteDataReady, setRemoteDataReady] = useState(false);
@@ -1702,6 +1746,25 @@ const App = () => {
       beverageAlcoholSalesSupply,
     };
   }, [activeStore, activeMonth, months]);
+  const pnlCostDetailRows = useMemo(() => {
+    if (!pnlCostDetailAccount || !activeStore || !activeMonth) return [];
+    const cardRowsForStore = (activeMonth.cardHistoryRows ?? []).filter(
+      (row) => normalize(row.appliedStore ?? "") === normalize(activeStore.name),
+    );
+    return buildPnlCostDetailRows(
+      pnlCostDetailAccount,
+      activeStore.name,
+      activeStore.costEntryRows ?? [],
+      cardRowsForStore,
+    );
+  }, [pnlCostDetailAccount, activeStore, activeMonth]);
+  const pnlCostDetailTotal = useMemo(
+    () => pnlCostDetailRows.reduce((sum, row) => sum + row.supplyAmount, 0),
+    [pnlCostDetailRows],
+  );
+  const closePnlCostDetailModal = useCallback(() => {
+    setPnlCostDetailAccount(null);
+  }, []);
   const formatSalesRatio = useCallback(
     (amount: number) => (pnlSummary.salesTotalSupply > 0 ? `${((amount / pnlSummary.salesTotalSupply) * 100).toFixed(1)}%` : "-"),
     [pnlSummary.salesTotalSupply],
@@ -3282,6 +3345,20 @@ const App = () => {
     void reconcileCostEvidenceIssuesFromMonthEvidence(runId);
   }, [storeDataTab, activeMonthId, activeStoreId]);
 
+  useEffect(() => {
+    if (!pnlCostDetailAccount) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      setPnlCostDetailAccount(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [pnlCostDetailAccount]);
+
+  useEffect(() => {
+    setPnlCostDetailAccount(null);
+  }, [activeMonthId, activeStoreId]);
+
   return (
     <main className="layout">
       <section className="panel">
@@ -4436,7 +4513,15 @@ const App = () => {
                         <>
                           {pnlSummary.normalizedCostByAccount.map((item) => (
                             <tr key={`cost-${item.label}`}>
-                              <td>{item.label}</td>
+                              <td>
+                                <button
+                                  type="button"
+                                  className="cost-date-link"
+                                  onClick={() => setPnlCostDetailAccount(item.label)}
+                                >
+                                  {item.label}
+                                </button>
+                              </td>
                               <td>{money.format(item.amount)}</td>
                               <td>{formatKeyMetricRatio(item.amount)}</td>
                             </tr>
@@ -5006,6 +5091,70 @@ const App = () => {
               </button>
               <button type="button" className="btn-secondary" disabled={evidenceDeleteBusy} onClick={closeEvidenceDeleteModal}>
                 취소
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {pnlCostDetailAccount && activeStore && activeMonth && (
+        <div
+          className="modal-backdrop"
+          role="presentation"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) closePnlCostDetailModal();
+          }}
+        >
+          <div
+            className="modal-panel modal-panel-pnl-cost-detail"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="pnl-cost-detail-modal-title"
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <div className="modal-header">
+              <h3 id="pnl-cost-detail-modal-title">{pnlCostDetailAccount} 비용 세부</h3>
+              <button type="button" className="modal-close" aria-label="닫기" onClick={closePnlCostDetailModal}>
+                ×
+              </button>
+            </div>
+            <p className="muted" style={{ marginBottom: 12 }}>
+              {activeMonth.label} · {activeStore.name}
+            </p>
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>명칭</th>
+                  <th>공급가액</th>
+                  <th>비용종류</th>
+                </tr>
+              </thead>
+              <tbody>
+                {pnlCostDetailRows.length === 0 ? (
+                  <tr>
+                    <td colSpan={3} className="muted">
+                      데이터 없음
+                    </td>
+                  </tr>
+                ) : (
+                  pnlCostDetailRows.map((row) => (
+                    <tr key={row.id}>
+                      <td>{row.name}</td>
+                      <td>{money.format(row.supplyAmount)}</td>
+                      <td>{row.costKind}</td>
+                    </tr>
+                  ))
+                )}
+                <tr className="pnl-total-row">
+                  <td>총합</td>
+                  <td>{money.format(pnlCostDetailTotal)}</td>
+                  <td />
+                </tr>
+              </tbody>
+            </table>
+            <div className="modal-actions">
+              <button type="button" className="btn-secondary" onClick={closePnlCostDetailModal}>
+                닫기
               </button>
             </div>
           </div>

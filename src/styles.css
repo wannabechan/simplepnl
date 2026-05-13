@@ -430,6 +430,11 @@ button {
   max-height: min(90vh, 640px);
 }
 
+.modal-panel-pnl-cost-detail {
+  width: min(560px, 100%);
+  max-height: min(90vh, 640px);
+}
+
 .evidence-modal-actions-bar {
   display: flex;
   flex-wrap: wrap;
