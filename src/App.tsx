@@ -1091,6 +1091,14 @@ const displayDateYmd = (value: string): string => {
   return v;
 };
 
+const compareCostRowsForDisplay = (a: CostEntryRow, b: CostEntryRow): number => {
+  const kind = a.expenseKind.localeCompare(b.expenseKind, "ko");
+  if (kind !== 0) return kind;
+  const vendor = a.vendorName.localeCompare(b.vendorName, "ko");
+  if (vendor !== 0) return vendor;
+  return displayDateYmd(a.paymentDate).localeCompare(displayDateYmd(b.paymentDate), "ko");
+};
+
 type EvidenceSingleEntryDraft = {
   date: string;
   approvalNumber: string;
@@ -1399,7 +1407,6 @@ const App = () => {
   const [inventoryModalOpen, setInventoryModalOpen] = useState(false);
   const [inventoryDraft, setInventoryDraft] = useState<InventoryDraft>(() => emptyInventoryDraft());
   const [inventoryBusy, setInventoryBusy] = useState(false);
-  const [costSortByAccount, setCostSortByAccount] = useState(false);
   const [cardModalOpen, setCardModalOpen] = useState(false);
   const [cardModalPhase, setCardModalPhase] = useState<"pick" | "reading" | "ready" | "saving" | "error">("pick");
   const [cardModalProgress, setCardModalProgress] = useState("");
@@ -1625,11 +1632,10 @@ const App = () => {
     [activeStore?.salesSummaryRows],
   );
   const productRowsForDisplay = useMemo(() => [...(activeStore?.productSummaryRows ?? [])], [activeStore?.productSummaryRows]);
-  const costRowsForDisplay = useMemo(() => {
-    const baseRows = sortCostRows([...(activeStore?.costEntryRows ?? [])]);
-    if (!costSortByAccount) return baseRows;
-    return [...baseRows].sort((a, b) => a.expenseKind.localeCompare(b.expenseKind, "ko"));
-  }, [activeStore?.costEntryRows, costSortByAccount]);
+  const costRowsForDisplay = useMemo(
+    () => [...(activeStore?.costEntryRows ?? [])].sort(compareCostRowsForDisplay),
+    [activeStore?.costEntryRows],
+  );
   const pnlSummary = useMemo(() => {
     const salesRows = activeStore?.salesSummaryRows ?? [];
     const salesTotalSupply = Math.round(salesRows.reduce((sum, row) => sum + row.supplyAmount, 0));
@@ -3335,11 +3341,6 @@ const App = () => {
     evidenceModalOpen && (evidenceModalPhase === "reading" || evidenceModalPhase === "saving");
 
   useEffect(() => {
-    if (storeDataTab !== "costs") return;
-    setCostSortByAccount(false);
-  }, [storeDataTab, activeStoreId]);
-
-  useEffect(() => {
     if (storeDataTab !== "costs" || !activeMonthId || !activeStoreId) return;
     const runId = ++costEvidenceReconcileRunId.current;
     void reconcileCostEvidenceIssuesFromMonthEvidence(runId);
@@ -4292,14 +4293,6 @@ const App = () => {
                           </span>
                         )}
                         <span className="sales-heading-grow" />
-                        <button
-                          type="button"
-                          className="btn-secondary"
-                          onClick={() => setCostSortByAccount((prev) => !prev)}
-                        >
-                          {costSortByAccount ? "정렬기준:기본" : "정렬기준:계정"}
-                        </button>
-                        <span aria-hidden={true}>{"\u00A0\u00A0"}</span>
                         <button
                           type="button"
                           className="btn-secondary"
