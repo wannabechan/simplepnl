@@ -2625,6 +2625,24 @@ const App = () => {
     closeSalesEntryModal();
   };
 
+  const onSalesRowDateDeleteRequest = async (row: SalesSummaryRow) => {
+    if (!activeMonthId || !activeStoreId) return;
+    if (!window.confirm("이 매출 요약 행을 삭제하시겠습니까?")) return;
+    const store = monthsRef.current
+      .find((m) => m.id === activeMonthId)
+      ?.stores.find((s) => s.id === activeStoreId);
+    if (!store) return;
+    const next = (store.salesSummaryRows ?? []).filter((r) => r.id !== row.id);
+    const result = await persistAllSalesRows(next);
+    if (!result.ok) {
+      window.alert(result.message);
+      return;
+    }
+    if (salesEntryEditingId === row.id) {
+      closeSalesEntryModal();
+    }
+  };
+
   const openInventoryModal = () => {
     if (!activeStore) return;
     setInventoryDraft({
@@ -3828,17 +3846,27 @@ const App = () => {
                             {salesRowsForDisplay.map((row) => (
                               <tr key={row.id}>
                                 <td>
-                                  {row.entryType === "manual" ? (
-                                    <button
-                                      type="button"
-                                      className="cost-date-link"
-                                      onClick={() => openEditSalesEntryModal(row)}
-                                    >
-                                      {row.businessDay}
-                                    </button>
-                                  ) : (
-                                    row.businessDay
+                                  {row.entryType === "manual" && (
+                                    <>
+                                      <button
+                                        type="button"
+                                        className="btn-secondary btn-xs"
+                                        disabled={salesEntryBusy || salesEntryModalOpen}
+                                        onClick={() => openEditSalesEntryModal(row)}
+                                      >
+                                        수정
+                                      </button>
+                                      <span aria-hidden={true}>{" "}</span>
+                                    </>
                                   )}
+                                  <button
+                                    type="button"
+                                    className="cost-date-link"
+                                    disabled={salesEntryBusy}
+                                    onClick={() => void onSalesRowDateDeleteRequest(row)}
+                                  >
+                                    {row.businessDay}
+                                  </button>
                                 </td>
                                 <td>{money.format(row.total)}</td>
                                 <td>{money.format(row.paymentAmount)}</td>
