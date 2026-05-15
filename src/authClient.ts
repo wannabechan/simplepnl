@@ -30,8 +30,8 @@ export async function fetchSession(token: string): Promise<{ ok: boolean; email?
   }
 }
 
-export async function requestOtp(email: string): Promise<{ ok: true } | { ok: false; status: number }> {
-  const response = await fetch("/api/auth-request-otp", {
+export async function checkAccount(email: string): Promise<{ ok: true } | { ok: false; status: number }> {
+  const response = await fetch("/api/auth-check-account", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ email: email.trim() }),
@@ -40,14 +40,14 @@ export async function requestOtp(email: string): Promise<{ ok: true } | { ok: fa
   return { ok: false, status: response.status };
 }
 
-export async function verifyOtp(
+export async function loginWithPassword(
   email: string,
-  code: string,
+  password: string,
 ): Promise<{ ok: true; token: string } | { ok: false; status: number }> {
-  const response = await fetch("/api/auth-verify-otp", {
+  const response = await fetch("/api/auth-login-password", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email: email.trim(), code }),
+    body: JSON.stringify({ email: email.trim(), password }),
   });
   if (!response.ok) return { ok: false, status: response.status };
   const data = (await response.json()) as { token?: string };

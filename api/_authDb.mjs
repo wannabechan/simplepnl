@@ -18,13 +18,6 @@ export function getSqlOrNull() {
 /** @param {ReturnType<typeof neon>} sql */
 export async function ensureAuthTables(sql) {
   await sql`
-    create table if not exists login_otp (
-      email text primary key,
-      code text not null,
-      expires_at timestamptz not null
-    )
-  `;
-  await sql`
     create table if not exists login_sessions (
       token text primary key,
       email text not null,
