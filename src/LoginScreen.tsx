@@ -1,8 +1,13 @@
 import { useState } from "react";
 import { clearStoredToken, checkAccount, loginWithPassword, setStoredToken } from "./authClient";
 
-const MSG_ACCESS = "アクセス不可";
-const MSG_PASSWORD = "パスワードエラー";
+const fmtAccountErr = (code: string | number) => `アクセス不可 : ${code}`;
+const fmtPasswordErr = (code: string | number) => `パスワードエラー : ${code}`;
+
+function httpOrNetworkCode(status: number): string | number {
+  if (!Number.isFinite(status) || status === 0) return "NETWORK";
+  return status;
+}
 
 type Props = {
   onSuccess: () => void;
@@ -19,7 +24,7 @@ export default function LoginScreen({ onSuccess }: Props) {
     setInlineError("");
     const trimmed = email.trim();
     if (!trimmed) {
-      setInlineError("이메일을 입력해 주세요.");
+      setInlineError(fmtAccountErr("INPUT"));
       return;
     }
     setBusy(true);
@@ -30,21 +35,9 @@ export default function LoginScreen({ onSuccess }: Props) {
         setPassword("");
         return;
       }
-      if (result.status === 403) {
-        setInlineError(MSG_ACCESS);
-        return;
-      }
-      if (result.status === 404) {
-        setInlineError("인증 API를 찾을 수 없습니다. vercel dev로 실행했는지 확인해 주세요.");
-        return;
-      }
-      if (result.status === 0 || Number.isNaN(result.status)) {
-        setInlineError("서버에 연결할 수 없습니다. vercel dev로 실행했는지 확인해 주세요.");
-        return;
-      }
-      setInlineError("확인에 실패했습니다. 잠시 후 다시 시도해 주세요.");
+      setInlineError(fmtAccountErr(httpOrNetworkCode(result.status)));
     } catch {
-      setInlineError("네트워크 오류가 발생했습니다.");
+      setInlineError(fmtAccountErr("NETWORK"));
     } finally {
       setBusy(false);
     }
@@ -54,11 +47,11 @@ export default function LoginScreen({ onSuccess }: Props) {
     setInlineError("");
     const trimmed = email.trim();
     if (!trimmed) {
-      setInlineError("이메일을 입력해 주세요.");
+      setInlineError(fmtPasswordErr("INPUT_EMAIL"));
       return;
     }
     if (!password) {
-      setInlineError("비밀번호를 입력해 주세요.");
+      setInlineError(fmtPasswordErr("INPUT_PASSWORD"));
       return;
     }
     setBusy(true);
@@ -70,21 +63,9 @@ export default function LoginScreen({ onSuccess }: Props) {
         onSuccess();
         return;
       }
-      if (result.status === 403) {
-        setInlineError(MSG_ACCESS);
-        return;
-      }
-      if (result.status === 401) {
-        setInlineError(MSG_PASSWORD);
-        return;
-      }
-      if (result.status === 404) {
-        setInlineError("인증 API를 찾을 수 없습니다. vercel dev로 실행했는지 확인해 주세요.");
-        return;
-      }
-      setInlineError("로그인에 실패했습니다. 다시 시도해 주세요.");
+      setInlineError(fmtPasswordErr(httpOrNetworkCode(result.status)));
     } catch {
-      setInlineError("네트워크 오류가 발생했습니다.");
+      setInlineError(fmtPasswordErr("NETWORK"));
     } finally {
       setBusy(false);
     }
