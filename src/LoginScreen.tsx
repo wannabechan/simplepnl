@@ -87,19 +87,14 @@ export default function LoginScreen({ onSuccess }: Props) {
         <div className="panel-heading">
           <h2>로그인</h2>
         </div>
-        <p className="muted" style={{ marginTop: 0, fontSize: 14 }}>
-          관리자 이메일로 인증 코드가 발송됩니다.
-        </p>
 
         {phase === "email" ? (
           <>
-            <label className="login-label" htmlFor="login-email">
-              이메일
-            </label>
             <input
               id="login-email"
               type="email"
               autoComplete="email"
+              aria-label="이메일"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               onKeyDown={(e) => {
