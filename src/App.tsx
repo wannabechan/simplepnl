@@ -1382,7 +1382,11 @@ const emptyCostEntryDraft = (): CostEntryDraft => ({
   memo: "",
 });
 
-const App = () => {
+type AppProps = {
+  onLogout: () => void;
+};
+
+const App = ({ onLogout }: AppProps) => {
   const [months, setMonths] = useState<MonthRecord[]>([]);
   const monthsRef = useRef(months);
   monthsRef.current = months;
@@ -3363,7 +3367,12 @@ const App = () => {
   return (
     <main className="layout">
       <section className="panel">
-        <h1>Simple P&L</h1>
+        <div className="app-title-row">
+          <h1>Simple P&L</h1>
+          <button type="button" className="logout-text" onClick={onLogout}>
+            logout
+          </button>
+        </div>
         {syncError && <p className="error">{syncError}</p>}
 
         <div className="row">
