@@ -1640,6 +1640,12 @@ const App = ({ onLogout }: AppProps) => {
     () => [...(activeStore?.costEntryRows ?? [])].sort(compareCostRowsForDisplay),
     [activeStore?.costEntryRows],
   );
+  const costUnpaidTotalAmount = useMemo(() => {
+    const rows = activeStore?.costEntryRows ?? [];
+    return Math.round(
+      rows.filter((row) => row.payStatus === "비결제").reduce((sum, row) => sum + row.totalAmount, 0),
+    );
+  }, [activeStore?.costEntryRows]);
   const pnlSummary = useMemo(() => {
     const salesRows = activeStore?.salesSummaryRows ?? [];
     const salesTotalSupply = Math.round(salesRows.reduce((sum, row) => sum + row.supplyAmount, 0));
@@ -4316,6 +4322,7 @@ const App = ({ onLogout }: AppProps) => {
                   {!activeStore ? (
                     <p className="muted">매장을 선택한 뒤 파일을 업로드할 수 있습니다.</p>
                   ) : (
+                    <>
                     <div className="data-table-scroll data-table-scroll-costs">
                       {(activeStore.costEntryRows?.length ?? 0) > 0 && (
                         <table className="data-table data-table-costs">
@@ -4405,6 +4412,11 @@ const App = ({ onLogout }: AppProps) => {
                         </table>
                       )}
                     </div>
+                    <br />
+                    <p className="cost-unpaid-sum">
+                      *비결제금액(합계금액 기준): {money.format(costUnpaidTotalAmount)}
+                    </p>
+                    </>
                   )}
                 </div>
                 {costTabLoading && (

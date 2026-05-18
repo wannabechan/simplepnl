@@ -343,6 +343,13 @@ button {
 }
 
 /** 비용 등록: 테이블이 패널 너비에 맞춰지도록 가로 스크롤 없음 */
+.cost-unpaid-sum {
+  margin: 0;
+  font-size: 13px;
+  color: #475569;
+  text-align: right;
+}
+
 .data-table-scroll-costs {
   overflow-x: hidden;
 }
