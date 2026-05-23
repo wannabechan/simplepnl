@@ -39,8 +39,8 @@ const CHART_W = 720;
 const CHART_H = 260;
 const PAD = { top: 16, right: 16, bottom: 52, left: 56 };
 
-const STACKED_Y_MAX = 150_000_000;
-const STACKED_Y_STEPS = 5;
+const STACKED_Y_MAX = 120_000_000;
+const STACKED_Y_STEPS = 4;
 const SINGLE_Y_MAX = 100_000_000;
 const SINGLE_Y_STEPS = 4;
 
@@ -130,6 +130,7 @@ export function StackedSalesBarChart({ title, titleMeta, storeCatalog, months, f
             const cx = PAD.left + slotW * mi + slotW / 2;
             const x = cx - barW / 2;
             let yBottom = PAD.top + innerH;
+            let barTop = yBottom;
             return (
               <g key={`${month.label}-${mi}`}>
                 {month.segments.map((seg) => {
@@ -150,9 +151,18 @@ export function StackedSalesBarChart({ title, titleMeta, storeCatalog, months, f
                       </title>
                     </rect>
                   );
+                  barTop = y;
                   yBottom = y;
                   return rect;
                 })}
+                <text
+                  x={cx}
+                  y={barTop - 5}
+                  textAnchor="middle"
+                  className="sales-chart-bar-value-label"
+                >
+                  {formatMoney(month.total)}
+                </text>
                 <text
                   x={cx}
                   y={CHART_H - PAD.bottom + 28}
@@ -229,6 +239,7 @@ export function SingleStoreSalesBarChart({ title, titleMeta, storeName, months, 
             const x = cx - barW / 2;
             const h = month.sales > 0 ? (month.sales / SINGLE_Y_MAX) * innerH : 0;
             const y = PAD.top + innerH - h;
+            const barTop = y;
             return (
               <g key={`${month.label}-${mi}`}>
                 <rect
@@ -243,6 +254,14 @@ export function SingleStoreSalesBarChart({ title, titleMeta, storeName, months, 
                     {month.label}: {formatMoney(month.sales)}
                   </title>
                 </rect>
+                <text
+                  x={cx}
+                  y={barTop - 5}
+                  textAnchor="middle"
+                  className="sales-chart-bar-value-label"
+                >
+                  {formatMoney(month.sales)}
+                </text>
                 <text
                   x={cx}
                   y={CHART_H - PAD.bottom + 28}

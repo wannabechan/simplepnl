@@ -394,6 +394,12 @@ button {
   fill: #64748b;
 }
 
+.sales-chart-bar-value-label {
+  font-size: 10px;
+  font-weight: 600;
+  fill: #334155;
+}
+
 .sales-chart-bar-seg {
   transition: opacity 0.15s ease;
 }
