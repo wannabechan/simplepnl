@@ -350,6 +350,80 @@ button {
   text-align: right;
 }
 
+.sales-chart-block {
+  margin-top: 8px;
+}
+
+.sales-chart-block + .sales-chart-block {
+  margin-top: 20px;
+}
+
+.sales-chart-title {
+  margin: 0 0 8px;
+  font-size: 1rem;
+}
+
+.sales-chart-subtitle {
+  margin: -4px 0 8px;
+  font-size: 13px;
+}
+
+.sales-chart-svg-wrap {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.sales-chart-svg {
+  display: block;
+  width: 100%;
+  max-width: 720px;
+  min-width: 320px;
+  height: auto;
+}
+
+.sales-chart-grid {
+  stroke: #e5e7eb;
+  stroke-width: 1;
+}
+
+.sales-chart-axis-label,
+.sales-chart-month-label {
+  font-size: 11px;
+  fill: #64748b;
+}
+
+.sales-chart-bar-seg {
+  transition: opacity 0.15s ease;
+}
+
+.sales-chart-bar-seg:hover {
+  opacity: 0.85;
+}
+
+.sales-chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 12px;
+  color: #475569;
+}
+
+.sales-chart-legend li {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.sales-chart-legend-swatch {
+  width: 12px;
+  height: 12px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+
 .data-table-scroll-costs {
   overflow-x: hidden;
 }

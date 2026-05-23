@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import * as XLSX from "xlsx";
+import { SingleStoreSalesBarChart, StackedSalesBarChart } from "./SalesTrendCharts";
 
 interface SalesSummaryRow {
   id: string;
@@ -915,6 +916,18 @@ const parseMonthLabelToYm = (label: string): { y: number; m: number } | null => 
   return null;
 };
 
+const compareMonthRecords = (a: MonthRecord, b: MonthRecord): number => {
+  const ay = parseMonthLabelToYm(a.label);
+  const by = parseMonthLabelToYm(b.label);
+  if (ay && by) {
+    if (ay.y !== by.y) return ay.y - by.y;
+    return ay.m - by.m;
+  }
+  if (ay) return -1;
+  if (by) return 1;
+  return a.label.localeCompare(b.label, "ko");
+};
+
 const ymMinusMonths = (ym: { y: number; m: number }, delta: number): { y: number; m: number } => {
   const idx = ym.y * 12 + (ym.m - 1) - delta;
   if (idx < 0) return { y: 0, m: 1 };
@@ -1822,6 +1835,37 @@ const App = ({ onLogout }: AppProps) => {
     }
     return { salesTotal: Math.round(salesTotal), profitTotal: Math.round(profitTotal) };
   }, [months, activeMonthId]);
+
+  const monthsUpToActiveChart = useMemo(() => {
+    if (!activeMonthId) return [];
+    const sorted = [...months].sort(compareMonthRecords);
+    const idx = sorted.findIndex((m) => m.id === activeMonthId);
+    if (idx < 0) return [];
+    return sorted.slice(0, idx + 1);
+  }, [months, activeMonthId]);
+
+  const stackedSalesChartMonths = useMemo(
+    () =>
+      monthsUpToActiveChart.map((month) => {
+        const rows = calcMonthOverallRows(month);
+        const segments = rows.map((row) => ({
+          storeId: row.storeId,
+          storeName: row.storeName,
+          sales: row.sales,
+        }));
+        const total = Math.round(rows.reduce((sum, row) => sum + row.sales, 0));
+        return { label: month.label, segments, total };
+      }),
+    [monthsUpToActiveChart],
+  );
+
+  const singleStoreSalesChartMonths = useMemo(() => {
+    if (!activeStoreId) return [];
+    return monthsUpToActiveChart.map((month) => {
+      const row = calcMonthOverallRows(month).find((r) => r.storeId === activeStoreId);
+      return { label: month.label, sales: row?.sales ?? 0 };
+    });
+  }, [monthsUpToActiveChart, activeStoreId]);
 
   /** 낙관적 갱신 후 `saveState` 실패 시 ref·React 상태를 롤백 */
   const applyMonthsAndSave = async (
@@ -4763,6 +4807,32 @@ const App = ({ onLogout }: AppProps) => {
                 </div>
               </div>
             ))}
+          </section>
+
+          <section className="panel">
+            <div className="panel-heading">
+              <h2>그래프</h2>
+              <span className="panel-heading-spacer" aria-hidden={true}>
+                {"\u00A0\u00A0"}
+              </span>
+              <p className="muted card-meta">
+                {activeStore
+                  ? `${activeMonth.label} / ${activeStore.name} · 수정 매출(공급가액)`
+                  : `${activeMonth.label} · 수정 매출(공급가액)`}
+              </p>
+            </div>
+            <StackedSalesBarChart
+              title="전체 매장 월별 수정 매출 (누적 막대)"
+              months={stackedSalesChartMonths}
+              formatMoney={(n) => money.format(n)}
+            />
+            <br />
+            <SingleStoreSalesBarChart
+              title="선택 매장 월별 수정 매출"
+              storeName={activeStore?.name ?? ""}
+              months={singleStoreSalesChartMonths}
+              formatMoney={(n) => money.format(n)}
+            />
           </section>
         </>
       )}
