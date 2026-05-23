@@ -394,6 +394,22 @@ button {
   fill: #64748b;
 }
 
+.sales-chart-axis-label-right {
+  font-size: 10px;
+  fill: #64748b;
+}
+
+.sales-chart-profit-zero-line {
+  stroke: #cbd5e1;
+  stroke-width: 1;
+  stroke-dasharray: 4 3;
+}
+
+.sales-chart-profit-dot {
+  stroke: #fff;
+  stroke-width: 1.5;
+}
+
 .sales-chart-bar-value-label {
   font-size: 10px;
   font-weight: 600;

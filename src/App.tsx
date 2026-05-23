@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import * as XLSX from "xlsx";
-import { SingleStoreSalesBarChart, StackedSalesBarChart } from "./SalesTrendCharts";
+import { getStoreChartColor, SingleStoreSalesBarChart, StackedSalesBarChart } from "./SalesTrendCharts";
 
 interface SalesSummaryRow {
   id: string;
@@ -1882,7 +1882,8 @@ const App = ({ onLogout }: AppProps) => {
           sales: salesByStoreKey.get(cat.key)?.sales ?? 0,
         }));
         const total = Math.round(segments.reduce((sum, seg) => sum + seg.sales, 0));
-        return { label: month.label, segments, total };
+        const profitTotal = Math.round(rows.reduce((sum, row) => sum + row.profit, 0));
+        return { label: month.label, segments, total, profitTotal };
       }),
     [monthsUpToActiveChart, chartStoreCatalog],
   );
@@ -1892,7 +1893,7 @@ const App = ({ onLogout }: AppProps) => {
     const storeKey = normalize(activeStore.name);
     return monthsUpToActiveChart.map((month) => {
       const row = calcMonthOverallRows(month).find((r) => normalize(r.storeName) === storeKey);
-      return { label: month.label, sales: row?.sales ?? 0 };
+      return { label: month.label, sales: row?.sales ?? 0, profit: row?.profit ?? 0 };
     });
   }, [monthsUpToActiveChart, activeStore]);
 
@@ -4847,20 +4848,25 @@ const App = ({ onLogout }: AppProps) => {
               <p className="muted card-meta">수정 매출(공급가액)</p>
             </div>
             <StackedSalesBarChart
-              title="전체 매장 월별 수정 매출 (누적 막대)"
+              title="전체 매장 월별 수정 매출/손익"
               titleMeta={formatMonthLabelCompact(activeMonth.label)}
               storeCatalog={chartStoreCatalog}
               months={stackedSalesChartMonths}
               formatMoney={(n) => money.format(n)}
             />
             <SingleStoreSalesBarChart
-              title="선택 매장 월별 수정 매출"
+              title="선택 매장 월별 수정 매출/손익"
               titleMeta={
                 activeStore
                   ? `${formatMonthLabelCompact(activeMonth.label)} / ${activeStore.name}`
                   : formatMonthLabelCompact(activeMonth.label)
               }
               storeName={activeStore?.name ?? ""}
+              barColor={
+                activeStore
+                  ? getStoreChartColor(chartStoreCatalog, normalize(activeStore.name))
+                  : "#3b82f6"
+              }
               months={singleStoreSalesChartMonths}
               formatMoney={(n) => money.format(n)}
             />
