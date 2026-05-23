@@ -916,6 +916,13 @@ const parseMonthLabelToYm = (label: string): { y: number; m: number } | null => 
   return null;
 };
 
+/** 월 라벨을 차트 보조 표기용 YYYYMM(예: 202604)으로 변환 */
+const formatMonthLabelCompact = (label: string): string => {
+  const ym = parseMonthLabelToYm(label);
+  if (ym) return `${ym.y}${String(ym.m).padStart(2, "0")}`;
+  return label.trim();
+};
+
 const compareMonthRecords = (a: MonthRecord, b: MonthRecord): number => {
   const ay = parseMonthLabelToYm(a.label);
   const by = parseMonthLabelToYm(b.label);
@@ -1844,28 +1851,50 @@ const App = ({ onLogout }: AppProps) => {
     return sorted.slice(0, idx + 1);
   }, [months, activeMonthId]);
 
+  /** 차트 색·쌓기 순서: 최초 등장 월의 매장 등록 순서, 동일 매장명은 동일 키 */
+  const chartStoreCatalog = useMemo(() => {
+    const order: { key: string; storeName: string }[] = [];
+    const seen = new Set<string>();
+    for (const month of monthsUpToActiveChart) {
+      for (const store of month.stores) {
+        const key = normalize(store.name);
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
+        order.push({ key, storeName: store.name });
+      }
+    }
+    return order;
+  }, [monthsUpToActiveChart]);
+
   const stackedSalesChartMonths = useMemo(
     () =>
       monthsUpToActiveChart.map((month) => {
         const rows = calcMonthOverallRows(month);
-        const segments = rows.map((row) => ({
-          storeId: row.storeId,
-          storeName: row.storeName,
-          sales: row.sales,
+        const salesByStoreKey = new Map<string, { storeName: string; sales: number }>();
+        for (const row of rows) {
+          const key = normalize(row.storeName);
+          if (!key) continue;
+          salesByStoreKey.set(key, { storeName: row.storeName, sales: row.sales });
+        }
+        const segments = chartStoreCatalog.map((cat) => ({
+          storeKey: cat.key,
+          storeName: cat.storeName,
+          sales: salesByStoreKey.get(cat.key)?.sales ?? 0,
         }));
-        const total = Math.round(rows.reduce((sum, row) => sum + row.sales, 0));
+        const total = Math.round(segments.reduce((sum, seg) => sum + seg.sales, 0));
         return { label: month.label, segments, total };
       }),
-    [monthsUpToActiveChart],
+    [monthsUpToActiveChart, chartStoreCatalog],
   );
 
   const singleStoreSalesChartMonths = useMemo(() => {
-    if (!activeStoreId) return [];
+    if (!activeStore) return [];
+    const storeKey = normalize(activeStore.name);
     return monthsUpToActiveChart.map((month) => {
-      const row = calcMonthOverallRows(month).find((r) => r.storeId === activeStoreId);
+      const row = calcMonthOverallRows(month).find((r) => normalize(r.storeName) === storeKey);
       return { label: month.label, sales: row?.sales ?? 0 };
     });
-  }, [monthsUpToActiveChart, activeStoreId]);
+  }, [monthsUpToActiveChart, activeStore]);
 
   /** 낙관적 갱신 후 `saveState` 실패 시 ref·React 상태를 롤백 */
   const applyMonthsAndSave = async (
@@ -4815,20 +4844,22 @@ const App = ({ onLogout }: AppProps) => {
               <span className="panel-heading-spacer" aria-hidden={true}>
                 {"\u00A0\u00A0"}
               </span>
-              <p className="muted card-meta">
-                {activeStore
-                  ? `${activeMonth.label} / ${activeStore.name} · 수정 매출(공급가액)`
-                  : `${activeMonth.label} · 수정 매출(공급가액)`}
-              </p>
+              <p className="muted card-meta">수정 매출(공급가액)</p>
             </div>
             <StackedSalesBarChart
               title="전체 매장 월별 수정 매출 (누적 막대)"
+              titleMeta={formatMonthLabelCompact(activeMonth.label)}
+              storeCatalog={chartStoreCatalog}
               months={stackedSalesChartMonths}
               formatMoney={(n) => money.format(n)}
             />
-            <br />
             <SingleStoreSalesBarChart
               title="선택 매장 월별 수정 매출"
+              titleMeta={
+                activeStore
+                  ? `${formatMonthLabelCompact(activeMonth.label)} / ${activeStore.name}`
+                  : formatMonthLabelCompact(activeMonth.label)
+              }
               storeName={activeStore?.name ?? ""}
               months={singleStoreSalesChartMonths}
               formatMoney={(n) => money.format(n)}

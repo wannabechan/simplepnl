@@ -358,14 +358,16 @@ button {
   margin-top: 20px;
 }
 
-.sales-chart-title {
-  margin: 0 0 8px;
-  font-size: 1rem;
+.sales-chart-heading {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
 }
 
-.sales-chart-subtitle {
-  margin: -4px 0 8px;
-  font-size: 13px;
+.sales-chart-title {
+  margin: 0;
+  font-size: 1rem;
 }
 
 .sales-chart-svg-wrap {
