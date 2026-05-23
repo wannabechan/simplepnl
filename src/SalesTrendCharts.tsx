@@ -61,24 +61,12 @@ const PROFIT_Y_RANGE = PROFIT_Y_MAX - PROFIT_Y_MIN;
 
 const PROFIT_DOT_OFFSET = 10;
 
-function formatSalesAxisValue(n: number): string {
-  if (n >= 100_000_000) return `${(n / 100_000_000).toFixed(1)}억`;
-  if (n >= 10000) return `${Math.round(n / 10000)}만`;
-  return String(Math.round(n));
-}
-
-function formatProfitAxisValue(n: number): string {
-  const sign = n < 0 ? "-" : "";
-  const abs = Math.abs(n);
-  if (abs >= 10000) return `${sign}${Math.round(abs / 10000)}만`;
-  return `${sign}${Math.round(abs)}`;
-}
-
-/** 막대 상단 라벨: 천 원 단위까지 (1,000원 미만 반올림) */
-function formatBarSalesLabel(n: number): string {
+/** Y축·막대 라벨: 천 원 단위 (1,000원 미만 반올림) */
+function formatThousandsLabel(n: number): string {
   if (n === 0) return "0";
-  const thousands = Math.round(n / 1000);
-  return `${thousands.toLocaleString("ko-KR")}천`;
+  const sign = n < 0 ? "-" : "";
+  const thousands = Math.round(Math.abs(n) / 1000);
+  return `${sign}${thousands.toLocaleString("ko-KR")}천`;
 }
 
 const BAR_VALUE_LABEL_OFFSET = 10;
@@ -121,7 +109,7 @@ function SalesYAxisGrid({ innerH }: { innerH: number }) {
           <g key={`sales-y-${i}`}>
             <line x1={PAD.left} y1={y} x2={plotRight} y2={y} className="sales-chart-grid" />
             <text x={PAD.left - 8} y={y + 4} textAnchor="end" className="sales-chart-axis-label">
-              {formatSalesAxisValue(val)}
+              {formatThousandsLabel(val)}
             </text>
           </g>
         );
@@ -142,7 +130,7 @@ function ProfitYAxisGrid({ innerH }: { innerH: number }) {
         return (
           <g key={`profit-y-${i}`}>
             <text x={plotRight + 6} y={y + 4} textAnchor="start" className="sales-chart-axis-label-right">
-              {formatProfitAxisValue(val)}
+              {formatThousandsLabel(val)}
             </text>
           </g>
         );
@@ -181,7 +169,7 @@ function ProfitMarker({
           textAnchor="middle"
           className="sales-chart-profit-below-label"
         >
-          {formatBarSalesLabel(profit)}
+          {formatThousandsLabel(profit)}
         </text>
         <polygon
           points={`${x},${arrowTipY} ${x - 6},${floorY} ${x + 6},${floorY}`}
@@ -276,7 +264,7 @@ export function StackedSalesBarChart({ title, titleMeta, storeCatalog, months, f
                   textAnchor="middle"
                   className="sales-chart-bar-value-label"
                 >
-                  {formatBarSalesLabel(month.total)}
+                  {formatThousandsLabel(month.total)}
                 </text>
                 <ProfitMarker
                   x={dotX}
@@ -380,7 +368,7 @@ export function SingleStoreSalesBarChart({ title, titleMeta, storeName, barColor
                   textAnchor="middle"
                   className="sales-chart-bar-value-label"
                 >
-                  {formatBarSalesLabel(month.sales)}
+                  {formatThousandsLabel(month.sales)}
                 </text>
                 <ProfitMarker
                   x={dotX}
