@@ -372,14 +372,13 @@ button {
 
 .sales-chart-svg-wrap {
   width: 100%;
-  overflow-x: auto;
 }
 
 .sales-chart-svg {
   display: block;
   width: 100%;
-  max-width: 720px;
-  min-width: 320px;
+  max-width: none;
+  min-width: 0;
   height: auto;
 }
 
@@ -388,15 +387,19 @@ button {
   stroke-width: 1;
 }
 
-.sales-chart-axis-label,
-.sales-chart-month-label {
-  font-size: 11px;
+.sales-chart-label {
+  font-size: 10px;
   fill: #64748b;
 }
 
-.sales-chart-axis-label-right {
-  font-size: 10px;
-  fill: #64748b;
+.sales-chart-label-strong {
+  font-weight: 600;
+  fill: #334155;
+}
+
+.sales-chart-label-negative {
+  font-weight: 600;
+  fill: #ef4444;
 }
 
 .sales-chart-profit-zero-line {
@@ -408,18 +411,6 @@ button {
 .sales-chart-profit-dot {
   stroke: #fff;
   stroke-width: 1.5;
-}
-
-.sales-chart-profit-below-label {
-  font-size: 10px;
-  font-weight: 600;
-  fill: #ef4444;
-}
-
-.sales-chart-bar-value-label {
-  font-size: 10px;
-  font-weight: 600;
-  fill: #334155;
 }
 
 .sales-chart-bar-seg {

@@ -1,3 +1,5 @@
+import { useEffect, useRef, useState } from "react";
+
 export type SalesChartSegment = {
   storeKey: string;
   storeName: string;
@@ -47,8 +49,9 @@ export function getStoreChartColor(catalog: StoreCatalogEntry[], storeKey: strin
   return STORE_COLORS[colorIndex % STORE_COLORS.length]!;
 }
 
-const CHART_W = 720;
 const CHART_H = 260;
+const CHART_W_MIN = 320;
+const CHART_W_DEFAULT = 720;
 const PAD = { top: 16, right: 48, bottom: 52, left: 56 };
 
 const SALES_Y_MAX = 120_000_000;
@@ -60,16 +63,35 @@ const PROFIT_Y_STEPS = 4;
 const PROFIT_Y_RANGE = PROFIT_Y_MAX - PROFIT_Y_MIN;
 
 const PROFIT_DOT_OFFSET = 10;
+const BAR_VALUE_LABEL_OFFSET = 10;
 
-/** Y축·막대 라벨: 천 원 단위 (1,000원 미만 반올림) */
-function formatThousandsLabel(n: number): string {
-  if (n === 0) return "0";
-  const sign = n < 0 ? "-" : "";
-  const thousands = Math.round(Math.abs(n) / 1000);
-  return `${sign}${thousands.toLocaleString("ko-KR")}천`;
+function useChartWidth() {
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const [chartW, setChartW] = useState(CHART_W_DEFAULT);
+
+  useEffect(() => {
+    const el = wrapRef.current;
+    if (!el) return;
+    const update = () => {
+      const w = el.clientWidth;
+      if (w > 0) setChartW(Math.max(CHART_W_MIN, Math.floor(w)));
+    };
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  return { wrapRef, chartW };
 }
 
-const BAR_VALUE_LABEL_OFFSET = 10;
+/** Y축·막대 라벨: 백만 원 단위 (1,000,000원 미만 반올림) */
+function formatMillionsLabel(n: number): string {
+  if (n === 0) return "0";
+  const sign = n < 0 ? "-" : "";
+  const millions = Math.round(Math.abs(n) / 1_000_000);
+  return `${sign}${millions.toLocaleString("ko-KR")}백만`;
+}
 
 function profitToY(profit: number, innerH: number): number {
   const clamped = Math.max(PROFIT_Y_MIN, Math.min(PROFIT_Y_MAX, profit));
@@ -97,8 +119,8 @@ function ChartTitleRow({ title, meta }: { title: string; meta?: string }) {
   );
 }
 
-function SalesYAxisGrid({ innerH }: { innerH: number }) {
-  const plotRight = CHART_W - PAD.right;
+function SalesYAxisGrid({ chartW, innerH }: { chartW: number; innerH: number }) {
+  const plotRight = chartW - PAD.right;
   return (
     <>
       {Array.from({ length: SALES_Y_STEPS + 1 }, (_, i) => {
@@ -108,8 +130,8 @@ function SalesYAxisGrid({ innerH }: { innerH: number }) {
         return (
           <g key={`sales-y-${i}`}>
             <line x1={PAD.left} y1={y} x2={plotRight} y2={y} className="sales-chart-grid" />
-            <text x={PAD.left - 8} y={y + 4} textAnchor="end" className="sales-chart-axis-label">
-              {formatThousandsLabel(val)}
+            <text x={PAD.left - 8} y={y + 4} textAnchor="end" className="sales-chart-label">
+              {formatMillionsLabel(val)}
             </text>
           </g>
         );
@@ -118,8 +140,8 @@ function SalesYAxisGrid({ innerH }: { innerH: number }) {
   );
 }
 
-function ProfitYAxisGrid({ innerH }: { innerH: number }) {
-  const plotRight = CHART_W - PAD.right;
+function ProfitYAxisGrid({ chartW, innerH }: { chartW: number; innerH: number }) {
+  const plotRight = chartW - PAD.right;
   const zeroY = profitToY(0, innerH);
   return (
     <>
@@ -129,8 +151,8 @@ function ProfitYAxisGrid({ innerH }: { innerH: number }) {
         const val = Math.round(PROFIT_Y_MIN + PROFIT_Y_RANGE * ratio);
         return (
           <g key={`profit-y-${i}`}>
-            <text x={plotRight + 6} y={y + 4} textAnchor="start" className="sales-chart-axis-label-right">
-              {formatThousandsLabel(val)}
+            <text x={plotRight + 6} y={y + 4} textAnchor="start" className="sales-chart-label">
+              {formatMillionsLabel(val)}
             </text>
           </g>
         );
@@ -163,13 +185,8 @@ function ProfitMarker({
     const labelY = floorY - 6;
     return (
       <g className="sales-chart-profit-below-min">
-        <text
-          x={x}
-          y={labelY}
-          textAnchor="middle"
-          className="sales-chart-profit-below-label"
-        >
-          {formatThousandsLabel(profit)}
+        <text x={x} y={labelY} textAnchor="middle" className="sales-chart-label sales-chart-label-negative">
+          {formatMillionsLabel(profit)}
         </text>
         <polygon
           points={`${x},${arrowTipY} ${x - 6},${floorY} ${x + 6},${floorY}`}
@@ -197,6 +214,8 @@ type StackedProps = {
 };
 
 export function StackedSalesBarChart({ title, titleMeta, storeCatalog, months, formatMoney }: StackedProps) {
+  const { wrapRef, chartW } = useChartWidth();
+
   if (months.length === 0) {
     return (
       <div className="sales-chart-block">
@@ -210,7 +229,7 @@ export function StackedSalesBarChart({ title, titleMeta, storeCatalog, months, f
   const colorByStoreKey = new Map<string, string>();
   storeCatalog.forEach((s) => colorByStoreKey.set(s.key, getStoreChartColor(storeCatalog, s.key)));
 
-  const innerW = CHART_W - PAD.left - PAD.right;
+  const innerW = chartW - PAD.left - PAD.right;
   const innerH = CHART_H - PAD.top - PAD.bottom;
   const slotW = innerW / months.length;
   const barW = Math.max(12, Math.min(48, slotW * 0.65));
@@ -219,15 +238,16 @@ export function StackedSalesBarChart({ title, titleMeta, storeCatalog, months, f
     <div className="sales-chart-block">
       <br />
       <ChartTitleRow title={title} meta={titleMeta} />
-      <div className="sales-chart-svg-wrap">
+      <div ref={wrapRef} className="sales-chart-svg-wrap">
         <svg
           className="sales-chart-svg"
-          viewBox={`0 0 ${CHART_W} ${CHART_H}`}
+          viewBox={`0 0 ${chartW} ${CHART_H}`}
+          preserveAspectRatio="xMidYMid meet"
           role="img"
           aria-label={title}
         >
-          <SalesYAxisGrid innerH={innerH} />
-          <ProfitYAxisGrid innerH={innerH} />
+          <SalesYAxisGrid chartW={chartW} innerH={innerH} />
+          <ProfitYAxisGrid chartW={chartW} innerH={innerH} />
           {months.map((month, mi) => {
             const cx = PAD.left + slotW * mi + slotW / 2;
             const x = cx - barW / 2;
@@ -262,9 +282,9 @@ export function StackedSalesBarChart({ title, titleMeta, storeCatalog, months, f
                   x={cx}
                   y={barTop - BAR_VALUE_LABEL_OFFSET}
                   textAnchor="middle"
-                  className="sales-chart-bar-value-label"
+                  className="sales-chart-label sales-chart-label-strong"
                 >
-                  {formatThousandsLabel(month.total)}
+                  {formatMillionsLabel(month.total)}
                 </text>
                 <ProfitMarker
                   x={dotX}
@@ -276,7 +296,7 @@ export function StackedSalesBarChart({ title, titleMeta, storeCatalog, months, f
                   x={cx}
                   y={CHART_H - PAD.bottom + 28}
                   textAnchor="middle"
-                  className="sales-chart-month-label"
+                  className="sales-chart-label"
                 >
                   {month.label.length > 10 ? `${month.label.slice(0, 9)}…` : month.label}
                 </text>
@@ -309,6 +329,8 @@ type SingleProps = {
 };
 
 export function SingleStoreSalesBarChart({ title, titleMeta, storeName, barColor, months, formatMoney }: SingleProps) {
+  const { wrapRef, chartW } = useChartWidth();
+
   if (!storeName) {
     return (
       <div className="sales-chart-block">
@@ -328,7 +350,7 @@ export function SingleStoreSalesBarChart({ title, titleMeta, storeName, barColor
     );
   }
 
-  const innerW = CHART_W - PAD.left - PAD.right;
+  const innerW = chartW - PAD.left - PAD.right;
   const innerH = CHART_H - PAD.top - PAD.bottom;
   const slotW = innerW / months.length;
   const barW = Math.max(12, Math.min(48, slotW * 0.65));
@@ -337,10 +359,16 @@ export function SingleStoreSalesBarChart({ title, titleMeta, storeName, barColor
     <div className="sales-chart-block">
       <br />
       <ChartTitleRow title={title} meta={titleMeta} />
-      <div className="sales-chart-svg-wrap">
-        <svg className="sales-chart-svg" viewBox={`0 0 ${CHART_W} ${CHART_H}`} role="img" aria-label={title}>
-          <SalesYAxisGrid innerH={innerH} />
-          <ProfitYAxisGrid innerH={innerH} />
+      <div ref={wrapRef} className="sales-chart-svg-wrap">
+        <svg
+          className="sales-chart-svg"
+          viewBox={`0 0 ${chartW} ${CHART_H}`}
+          preserveAspectRatio="xMidYMid meet"
+          role="img"
+          aria-label={title}
+        >
+          <SalesYAxisGrid chartW={chartW} innerH={innerH} />
+          <ProfitYAxisGrid chartW={chartW} innerH={innerH} />
           {months.map((month, mi) => {
             const cx = PAD.left + slotW * mi + slotW / 2;
             const x = cx - barW / 2;
@@ -366,9 +394,9 @@ export function SingleStoreSalesBarChart({ title, titleMeta, storeName, barColor
                   x={cx}
                   y={barTop - BAR_VALUE_LABEL_OFFSET}
                   textAnchor="middle"
-                  className="sales-chart-bar-value-label"
+                  className="sales-chart-label sales-chart-label-strong"
                 >
-                  {formatThousandsLabel(month.sales)}
+                  {formatMillionsLabel(month.sales)}
                 </text>
                 <ProfitMarker
                   x={dotX}
@@ -380,7 +408,7 @@ export function SingleStoreSalesBarChart({ title, titleMeta, storeName, barColor
                   x={cx}
                   y={CHART_H - PAD.bottom + 28}
                   textAnchor="middle"
-                  className="sales-chart-month-label"
+                  className="sales-chart-label"
                 >
                   {month.label.length > 10 ? `${month.label.slice(0, 9)}…` : month.label}
                 </text>
