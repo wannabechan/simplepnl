@@ -158,7 +158,7 @@ function ProfitYAxisGrid({ innerH }: { innerH: number }) {
   );
 }
 
-function ProfitDot({
+function ProfitMarker({
   x,
   profit,
   innerH,
@@ -169,6 +169,29 @@ function ProfitDot({
   innerH: number;
   tooltip: string;
 }) {
+  if (profit < PROFIT_Y_MIN) {
+    const floorY = profitToY(PROFIT_Y_MIN, innerH);
+    const arrowTipY = floorY + 9;
+    const labelY = floorY - 6;
+    return (
+      <g className="sales-chart-profit-below-min">
+        <text
+          x={x}
+          y={labelY}
+          textAnchor="middle"
+          className="sales-chart-profit-below-label"
+        >
+          {formatBarSalesLabel(profit)}
+        </text>
+        <polygon
+          points={`${x},${arrowTipY} ${x - 6},${floorY} ${x + 6},${floorY}`}
+          fill={PROFIT_NEGATIVE_COLOR}
+        />
+        <title>{tooltip}</title>
+      </g>
+    );
+  }
+
   const cy = profitToY(profit, innerH);
   return (
     <circle cx={x} cy={cy} r={5} fill={profitDotColor(profit)} className="sales-chart-profit-dot">
@@ -255,7 +278,7 @@ export function StackedSalesBarChart({ title, titleMeta, storeCatalog, months, f
                 >
                   {formatBarSalesLabel(month.total)}
                 </text>
-                <ProfitDot
+                <ProfitMarker
                   x={dotX}
                   profit={month.profitTotal}
                   innerH={innerH}
@@ -359,7 +382,7 @@ export function SingleStoreSalesBarChart({ title, titleMeta, storeName, barColor
                 >
                   {formatBarSalesLabel(month.sales)}
                 </text>
-                <ProfitDot
+                <ProfitMarker
                   x={dotX}
                   profit={month.profit}
                   innerH={innerH}

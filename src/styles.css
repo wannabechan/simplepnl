@@ -410,6 +410,12 @@ button {
   stroke-width: 1.5;
 }
 
+.sales-chart-profit-below-label {
+  font-size: 10px;
+  font-weight: 600;
+  fill: #ef4444;
+}
+
 .sales-chart-bar-value-label {
   font-size: 10px;
   font-weight: 600;
