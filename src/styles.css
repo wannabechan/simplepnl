@@ -536,6 +536,15 @@ button {
   vertical-align: bottom;
 }
 
+.data-table-costs .cost-vendor-cell {
+  cursor: pointer;
+  user-select: none;
+}
+
+.data-table-costs .cost-vendor-cell-marked {
+  background: #fecaca;
+}
+
 .data-table-products {
   table-layout: fixed;
 }

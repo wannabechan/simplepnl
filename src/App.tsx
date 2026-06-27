@@ -1485,6 +1485,8 @@ const App = ({ onLogout }: AppProps) => {
   const [costEntryBusy, setCostEntryBusy] = useState(false);
   /** 매장별 데이터 패널 탭 */
   const [storeDataTab, setStoreDataTab] = useState<"sales" | "products" | "costs">("sales");
+  /** 비용 등록 탭: 업체명 셀 클릭 하이라이트(탭 이탈 시 초기화) */
+  const [costVendorHighlightIds, setCostVendorHighlightIds] = useState<Set<string>>(() => new Set());
   const [pnlRevenueAdjustmentLabel, setPnlRevenueAdjustmentLabel] = useState("");
   const [pnlRevenueAdjustmentAmount, setPnlRevenueAdjustmentAmount] = useState("0");
   const [pnlCostAdjustmentLabel, setPnlCostAdjustmentLabel] = useState("");
@@ -3431,6 +3433,11 @@ const App = ({ onLogout }: AppProps) => {
   }, [storeDataTab, activeMonthId, activeStoreId]);
 
   useEffect(() => {
+    if (storeDataTab === "costs") return;
+    setCostVendorHighlightIds(new Set());
+  }, [storeDataTab]);
+
+  useEffect(() => {
     if (!pnlCostDetailAccount) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
@@ -4427,7 +4434,23 @@ const App = ({ onLogout }: AppProps) => {
                                   </button>
                                 </td>
                                 <td>{row.expenseKind}</td>
-                                <td>{row.vendorName}</td>
+                                <td
+                                  className={
+                                    costVendorHighlightIds.has(row.id)
+                                      ? "cost-vendor-cell cost-vendor-cell-marked"
+                                      : "cost-vendor-cell"
+                                  }
+                                  onClick={() => {
+                                    setCostVendorHighlightIds((prev) => {
+                                      const next = new Set(prev);
+                                      if (next.has(row.id)) next.delete(row.id);
+                                      else next.add(row.id);
+                                      return next;
+                                    });
+                                  }}
+                                >
+                                  {row.vendorName}
+                                </td>
                                 <td>{money.format(Math.round(row.totalAmount))}</td>
                                 <td>{money.format(Math.round(row.supplyAmount))}</td>
                                 <td>{money.format(Math.round(row.vat))}</td>
