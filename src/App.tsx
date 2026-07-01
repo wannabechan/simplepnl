@@ -1111,12 +1111,41 @@ const displayDateYmd = (value: string): string => {
   return v;
 };
 
+const YMD_DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
+
+const parseYmdParts = (value: string): { y: number; m: number; d: number } | null => {
+  const normalized = displayDateYmd(formatBusinessDay(value));
+  const m = normalized.match(YMD_DATE_RE);
+  if (!m) return null;
+  const y = Number(m[1]);
+  const mo = Number(m[2]);
+  const d = Number(m[3]);
+  if (!Number.isFinite(y) || mo < 1 || mo > 12 || d < 1 || d > 31) return null;
+  const dt = new Date(y, mo - 1, d);
+  if (dt.getFullYear() !== y || dt.getMonth() !== mo - 1 || dt.getDate() !== d) return null;
+  return { y, m: mo, d };
+};
+
+const normalizePaymentDateYmd = (value: string): string => {
+  const parts = parseYmdParts(value);
+  if (!parts) return "";
+  const { y, m, d } = parts;
+  return `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+};
+
+const isValidPaymentDateYmd = (value: string): boolean => normalizePaymentDateYmd(value) !== "";
+
+const displayCostPaymentDate = (value: string): string => {
+  const normalized = normalizePaymentDateYmd(value);
+  return normalized || "error";
+};
+
 const compareCostRowsForDisplay = (a: CostEntryRow, b: CostEntryRow): number => {
   const kind = a.expenseKind.localeCompare(b.expenseKind, "ko");
   if (kind !== 0) return kind;
   const vendor = a.vendorName.localeCompare(b.vendorName, "ko");
   if (vendor !== 0) return vendor;
-  return displayDateYmd(a.paymentDate).localeCompare(displayDateYmd(b.paymentDate), "ko");
+  return displayCostPaymentDate(a.paymentDate).localeCompare(displayCostPaymentDate(b.paymentDate), "ko");
 };
 
 type EvidenceSingleEntryDraft = {
@@ -1482,6 +1511,7 @@ const App = ({ onLogout }: AppProps) => {
   const [costEntryModalOpen, setCostEntryModalOpen] = useState(false);
   const [costEntryEditingId, setCostEntryEditingId] = useState<string | null>(null);
   const [costEntryDraft, setCostEntryDraft] = useState<CostEntryDraft>(() => emptyCostEntryDraft());
+  const [costEntryPaymentDateError, setCostEntryPaymentDateError] = useState("");
   const [costEntryBusy, setCostEntryBusy] = useState(false);
   /** 매장별 데이터 패널 탭 */
   const [storeDataTab, setStoreDataTab] = useState<"sales" | "products" | "costs">("sales");
@@ -2612,13 +2642,15 @@ const App = ({ onLogout }: AppProps) => {
     if (!activeStore || costEntryBusy) return;
     setCostEntryEditingId(null);
     setCostEntryDraft(emptyCostEntryDraft());
+    setCostEntryPaymentDateError("");
     setCostEntryModalOpen(true);
   };
 
   const openEditCostEntryModal = (row: CostEntryRow) => {
     setCostEntryEditingId(row.id);
+    setCostEntryPaymentDateError("");
     setCostEntryDraft({
-      paymentDate: row.paymentDate,
+      paymentDate: normalizePaymentDateYmd(row.paymentDate) || "",
       expenseKind: row.expenseKind,
       vendorName: row.vendorName,
       totalAmount: String(row.totalAmount),
@@ -2636,8 +2668,12 @@ const App = ({ onLogout }: AppProps) => {
     setCostEntryModalOpen(false);
     setCostEntryEditingId(null);
     setCostEntryDraft(emptyCostEntryDraft());
+    setCostEntryPaymentDateError("");
   };
   const onCostEntryDraftChange = (patch: Partial<CostEntryDraft>) => {
+    if (patch.paymentDate !== undefined) {
+      setCostEntryPaymentDateError("");
+    }
     setCostEntryDraft((prev) => {
       const next: CostEntryDraft = { ...prev, ...patch };
       const derived = calcSupplyAndVat(next.totalAmount, next.taxMode);
@@ -2649,13 +2685,19 @@ const App = ({ onLogout }: AppProps) => {
 
   const onCostEntrySave = async () => {
     if (!activeStore) return;
+    const paymentDate = normalizePaymentDateYmd(formatBusinessDay(costEntryDraft.paymentDate));
+    if (!paymentDate) {
+      setCostEntryPaymentDateError("결제일을 올바르게 입력해 주세요.");
+      return;
+    }
+    setCostEntryPaymentDateError("");
     setCostEntryBusy(true);
     const existing = [...(activeStore.costEntryRows ?? [])];
     const derived = calcSupplyAndVat(costEntryDraft.totalAmount, costEntryDraft.taxMode);
     const prevRow = costEntryEditingId ? existing.find((r) => r.id === costEntryEditingId) : null;
     const asRow: CostEntryRow = {
       id: costEntryEditingId ?? nowId(),
-      paymentDate: formatBusinessDay(costEntryDraft.paymentDate),
+      paymentDate,
       expenseKind: costEntryDraft.expenseKind.trim(),
       vendorName: costEntryDraft.vendorName.trim(),
       totalAmount: toNumber(costEntryDraft.totalAmount),
@@ -4427,10 +4469,14 @@ const App = ({ onLogout }: AppProps) => {
                                 <td>
                                   <button
                                     type="button"
-                                    className="cost-date-link"
+                                    className={
+                                      isValidPaymentDateYmd(row.paymentDate)
+                                        ? "cost-date-link"
+                                        : "cost-date-link cost-date-link-error"
+                                    }
                                     onClick={() => openEditCostEntryModal(row)}
                                   >
-                                    {displayDateYmd(row.paymentDate)}
+                                    {displayCostPaymentDate(row.paymentDate)}
                                   </button>
                                 </td>
                                 <td>{row.expenseKind}</td>
@@ -5562,8 +5608,12 @@ const App = ({ onLogout }: AppProps) => {
                 <input
                   type="date"
                   value={costEntryDraft.paymentDate}
+                  aria-invalid={costEntryPaymentDateError ? true : undefined}
                   onChange={(e) => onCostEntryDraftChange({ paymentDate: e.target.value })}
                 />
+                {costEntryPaymentDateError && (
+                  <span className="error cost-form-field-error">{costEntryPaymentDateError}</span>
+                )}
               </label>
               <label>
                 비용계정

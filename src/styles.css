@@ -929,6 +929,17 @@ button {
   font: inherit;
 }
 
+.cost-date-link-error {
+  color: #b91c1c;
+  text-decoration-color: #b91c1c;
+}
+
+.cost-form-field-error {
+  display: block;
+  margin-top: 4px;
+  font-size: 0.85rem;
+}
+
 @keyframes modal-indeterminate {
   0% {
     transform: translateX(-100%);
