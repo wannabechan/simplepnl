@@ -2555,6 +2555,30 @@ const App = ({ onLogout }: AppProps) => {
     }, 2000);
   };
 
+  const onProductSummaryDeleteAll = async () => {
+    if (!activeStore) return;
+    const count = activeStore.productSummaryRows?.length ?? 0;
+    if (count === 0) return;
+    if (!window.confirm("해당 매장의 상품 요약 데이터를 모두 삭제하시겠습니까?")) return;
+    setProductTableSaveBusy(true);
+    setProductTableSaveMessage("");
+    setProductTableSaveMessageType("");
+    const result = await persistProductRows([]);
+    setProductTableSaveBusy(false);
+    if (!result.ok) {
+      setProductTableSaveMessage(`삭제 실패: ${result.message}`);
+      setProductTableSaveMessageType("error");
+      window.alert(result.message);
+      return;
+    }
+    setProductTableSaveMessage("삭제 완료");
+    setProductTableSaveMessageType("ok");
+    window.setTimeout(() => {
+      setProductTableSaveMessage("");
+      setProductTableSaveMessageType("");
+    }, 2000);
+  };
+
   const openCostUploadModal = () => {
     if (!activeMonthId || !activeStoreId || !activeStore) return;
     if (costModalOpen || salesModalOpen || productModalOpen || salesEntryModalOpen || cardModalOpen) return;
@@ -4320,6 +4344,19 @@ const App = ({ onLogout }: AppProps) => {
                             )}
                           </span>
                         )}
+                        <span className="sales-heading-grow" />
+                        <button
+                          type="button"
+                          className="logout-text"
+                          disabled={
+                            productTableSaveBusy ||
+                            productModalOpen ||
+                            (activeStore.productSummaryRows?.length ?? 0) === 0
+                          }
+                          onClick={() => void onProductSummaryDeleteAll()}
+                        >
+                          delete
+                        </button>
                       </>
                     )}
                   </div>

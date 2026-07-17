@@ -69,8 +69,13 @@ button.logout-text {
   cursor: pointer;
 }
 
-button.logout-text:hover {
+button.logout-text:hover:not(:disabled) {
   color: #6b7280;
+}
+
+button.logout-text:disabled {
+  color: #d1d5db;
+  cursor: default;
 }
 
 .layout {
