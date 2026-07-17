@@ -1239,6 +1239,19 @@ const COST_ACCOUNT_OPTIONS = [
   "_기타",
 ] as const;
 
+/** 전체 결과 · 비용 종합(계정 기준) 고정비 안내·합산 대상 */
+const OVERALL_FIXED_COST_ACCOUNT_LABELS = [
+  "매장유지비",
+  "보험",
+  "인건비",
+  "임관리비",
+  "SaaS",
+  "외주용역비",
+] as const;
+const OVERALL_FIXED_COST_ACCOUNT_KEYS = new Set(
+  OVERALL_FIXED_COST_ACCOUNT_LABELS.map((label) => normalize(label)),
+);
+
 /** 증빙발행 자동판단 시 항상 '해당없음'으로 두는 비용계정 */
 const costExpenseKindRequiresNoEvidenceIssue = (expenseKind: string): boolean => {
   const k = expenseKind.trim();
@@ -1915,9 +1928,16 @@ const App = ({ onLogout }: AppProps) => {
         accountRows: [] as Array<{ label: string; amount: number }>,
         adjustmentRows: [] as Array<{ label: string; amount: number }>,
         costTotal: 0,
+        fixedCostTotal: 0,
       };
     }
-    return calcMonthOverallCostByAccount(activeMonth);
+    const result = calcMonthOverallCostByAccount(activeMonth);
+    const fixedCostTotal = Math.round(
+      result.accountRows
+        .filter((row) => OVERALL_FIXED_COST_ACCOUNT_KEYS.has(normalize(row.label)))
+        .reduce((sum, row) => sum + row.amount, 0),
+    );
+    return { ...result, fixedCostTotal };
   }, [activeMonth]);
 
   const monthOverallYearCumulative = useMemo(() => {
@@ -4130,6 +4150,7 @@ const App = ({ onLogout }: AppProps) => {
                       <div className="pnl-header-row">
                         <div className="pnl-header-title-group">
                           <h3>비용 종합</h3>
+                          <span aria-hidden={true}>{"\u00A0"}</span>
                           <button
                             type="button"
                             className={`overall-cost-filter${monthOverallCostView === "store" ? " overall-cost-filter-active" : ""}`}
@@ -4146,6 +4167,16 @@ const App = ({ onLogout }: AppProps) => {
                           >
                             계정 기준
                           </button>
+                          {monthOverallCostView === "account" && (
+                            <>
+                              <span className="overall-cost-filter overall-cost-filter-active">
+                                (고정비 ₩{money.format(monthOverallCostByAccount.fixedCostTotal)})
+                              </span>
+                              <span className="pnl-cumulative-inline">
+                                고정비 항목 : {OVERALL_FIXED_COST_ACCOUNT_LABELS.join(", ")}
+                              </span>
+                            </>
+                          )}
                         </div>
                         <div className="pnl-header-value-group">
                           <strong>{money.format(monthOverallSummary.costTotal)}</strong>
