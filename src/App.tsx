@@ -1068,14 +1068,60 @@ const calcMonthOverallRows = (month: MonthRecord) =>
       (store.pnlCostAdjustments ?? []).reduce((sum, row) => sum + row.supplyAmount, 0),
     );
     const sales = baseSales + revenueAdjustments;
-    const profit = sales - (directCost + cardCost + costAdjustments);
-    return { storeId: store.id, storeName: store.name, sales, profit };
+    const cost = directCost + cardCost + costAdjustments;
+    const profit = sales - cost;
+    return { storeId: store.id, storeName: store.name, sales, cost, profit };
   });
+
+const addAmountByLabel = (
+  map: Map<string, { label: string; amount: number }>,
+  rawLabel: string,
+  amount: number,
+) => {
+  const label = rawLabel.trim() || "미분류";
+  const key = normalize(label);
+  const prev = map.get(key);
+  map.set(key, { label: prev?.label ?? label, amount: (prev?.amount ?? 0) + Math.round(amount) });
+};
+
+/** 전체 결과 · 비용 종합(계정 기준): 비용계정 합집합 + 그 아래 수정 비용 항목 합집합 */
+const calcMonthOverallCostByAccount = (month: MonthRecord) => {
+  const accountMap = new Map<string, { label: string; amount: number }>();
+  const adjustmentMap = new Map<string, { label: string; amount: number }>();
+  const storeNameKeys = new Set(month.stores.map((s) => normalize(s.name)).filter(Boolean));
+
+  for (const store of month.stores) {
+    for (const row of store.costEntryRows ?? []) {
+      addAmountByLabel(accountMap, row.expenseKind, row.supplyAmount);
+    }
+    for (const row of store.pnlCostAdjustments ?? []) {
+      addAmountByLabel(adjustmentMap, row.label, row.supplyAmount);
+    }
+  }
+  for (const row of month.cardHistoryRows ?? []) {
+    const storeKey = normalize(row.appliedStore ?? "");
+    if (!storeKey || !storeNameKeys.has(storeKey)) continue;
+    addAmountByLabel(accountMap, row.expenseAccount ?? "", Math.round(row.approvalAmount / 1.1));
+  }
+
+  const accountRows = Array.from(accountMap.values())
+    .map((row) => ({ label: row.label, amount: Math.round(row.amount) }))
+    .sort((a, b) => a.label.localeCompare(b.label, "ko"));
+  const adjustmentRows = Array.from(adjustmentMap.values())
+    .map((row) => ({ label: row.label, amount: Math.round(row.amount) }))
+    .sort((a, b) => a.label.localeCompare(b.label, "ko"));
+  const costTotal = Math.round(
+    accountRows.reduce((sum, row) => sum + row.amount, 0) +
+      adjustmentRows.reduce((sum, row) => sum + row.amount, 0),
+  );
+  return { accountRows, adjustmentRows, costTotal };
+};
 
 const calcMonthOverallTotals = (month: MonthRecord) => {
   const rows = calcMonthOverallRows(month);
   return {
     salesTotal: Math.round(rows.reduce((sum, row) => sum + row.sales, 0)),
+    costTotal: Math.round(rows.reduce((sum, row) => sum + row.cost, 0)),
     profitTotal: Math.round(rows.reduce((sum, row) => sum + row.profit, 0)),
   };
 };
@@ -1490,6 +1536,7 @@ const App = ({ onLogout }: AppProps) => {
   const [evidenceDeleteBusy, setEvidenceDeleteBusy] = useState(false);
   const [evidenceCostRegisteringId, setEvidenceCostRegisteringId] = useState<string | null>(null);
   const [monthCommonTab, setMonthCommonTab] = useState<"cards" | "evidence" | "overall">("cards");
+  const [monthOverallCostView, setMonthOverallCostView] = useState<"store" | "account">("store");
   const [monthCommonCollapsed, setMonthCommonCollapsed] = useState(true);
   const [storeDataCollapsed, setStoreDataCollapsed] = useState(true);
   const [storePnlCollapsed, setStorePnlCollapsed] = useState(true);
@@ -1848,31 +1895,54 @@ const App = ({ onLogout }: AppProps) => {
   );
   const monthOverallSummary = useMemo(() => {
     if (!activeMonth) {
-      return { rows: [] as Array<{ storeId: string; storeName: string; sales: number; profit: number }>, salesTotal: 0, profitTotal: 0 };
+      return {
+        rows: [] as Array<{ storeId: string; storeName: string; sales: number; cost: number; profit: number }>,
+        salesTotal: 0,
+        costTotal: 0,
+        profitTotal: 0,
+      };
     }
     const rows = calcMonthOverallRows(activeMonth);
     const salesTotal = Math.round(rows.reduce((sum, row) => sum + row.sales, 0));
+    const costTotal = Math.round(rows.reduce((sum, row) => sum + row.cost, 0));
     const profitTotal = Math.round(rows.reduce((sum, row) => sum + row.profit, 0));
-    return { rows, salesTotal, profitTotal };
+    return { rows, salesTotal, costTotal, profitTotal };
+  }, [activeMonth]);
+
+  const monthOverallCostByAccount = useMemo(() => {
+    if (!activeMonth) {
+      return {
+        accountRows: [] as Array<{ label: string; amount: number }>,
+        adjustmentRows: [] as Array<{ label: string; amount: number }>,
+        costTotal: 0,
+      };
+    }
+    return calcMonthOverallCostByAccount(activeMonth);
   }, [activeMonth]);
 
   const monthOverallYearCumulative = useMemo(() => {
-    if (!activeMonthId) return { salesTotal: 0, profitTotal: 0 };
+    if (!activeMonthId) return { salesTotal: 0, costTotal: 0, profitTotal: 0 };
     const idx = months.findIndex((m) => m.id === activeMonthId);
-    if (idx < 0) return { salesTotal: 0, profitTotal: 0 };
+    if (idx < 0) return { salesTotal: 0, costTotal: 0, profitTotal: 0 };
     const activeYear = monthLabelYear(months[idx].label);
-    if (!activeYear) return { salesTotal: 0, profitTotal: 0 };
+    if (!activeYear) return { salesTotal: 0, costTotal: 0, profitTotal: 0 };
 
     let salesTotal = 0;
+    let costTotal = 0;
     let profitTotal = 0;
     for (let i = 0; i <= idx; i++) {
       const month = months[i]!;
       if (monthLabelYear(month.label) !== activeYear) continue;
       const totals = calcMonthOverallTotals(month);
       salesTotal += totals.salesTotal;
+      costTotal += totals.costTotal;
       profitTotal += totals.profitTotal;
     }
-    return { salesTotal: Math.round(salesTotal), profitTotal: Math.round(profitTotal) };
+    return {
+      salesTotal: Math.round(salesTotal),
+      costTotal: Math.round(costTotal),
+      profitTotal: Math.round(profitTotal),
+    };
   }, [months, activeMonthId]);
 
   const monthsUpToActiveChart = useMemo(() => {
@@ -4054,6 +4124,106 @@ const App = ({ onLogout }: AppProps) => {
                           )}
                         </tbody>
                       </table>
+                    </div>
+                    <br />
+                    <div className="pnl-section">
+                      <div className="pnl-header-row">
+                        <div className="pnl-header-title-group">
+                          <h3>비용 종합</h3>
+                          <button
+                            type="button"
+                            className={`overall-cost-filter${monthOverallCostView === "store" ? " overall-cost-filter-active" : ""}`}
+                            aria-pressed={monthOverallCostView === "store"}
+                            onClick={() => setMonthOverallCostView("store")}
+                          >
+                            매장 기준
+                          </button>
+                          <button
+                            type="button"
+                            className={`overall-cost-filter${monthOverallCostView === "account" ? " overall-cost-filter-active" : ""}`}
+                            aria-pressed={monthOverallCostView === "account"}
+                            onClick={() => setMonthOverallCostView("account")}
+                          >
+                            계정 기준
+                          </button>
+                        </div>
+                        <div className="pnl-header-value-group">
+                          <strong>{money.format(monthOverallSummary.costTotal)}</strong>
+                          <span className="pnl-cumulative-inline">
+                            누적 {money.format(monthOverallYearCumulative.costTotal)}
+                          </span>
+                        </div>
+                      </div>
+                      {monthOverallCostView === "store" ? (
+                        <table className="data-table pnl-table pnl-table-2col">
+                          <thead>
+                            <tr>
+                              <th>매장</th>
+                              <th>월비용</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {monthOverallSummary.rows.length === 0 ? (
+                              <tr>
+                                <td colSpan={2} className="muted">
+                                  데이터 없음
+                                </td>
+                              </tr>
+                            ) : (
+                              <>
+                                {monthOverallSummary.rows.map((row) => (
+                                  <tr key={`overall-cost-store-${row.storeId}`}>
+                                    <td>{row.storeName}</td>
+                                    <td>{money.format(row.cost)}</td>
+                                  </tr>
+                                ))}
+                                <tr className="pnl-total-row">
+                                  <td>전체 합계</td>
+                                  <td>{money.format(monthOverallSummary.costTotal)}</td>
+                                </tr>
+                              </>
+                            )}
+                          </tbody>
+                        </table>
+                      ) : (
+                        <table className="data-table pnl-table pnl-table-2col">
+                          <thead>
+                            <tr>
+                              <th>비용 계정</th>
+                              <th>월비용</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {monthOverallCostByAccount.accountRows.length === 0 &&
+                            monthOverallCostByAccount.adjustmentRows.length === 0 ? (
+                              <tr>
+                                <td colSpan={2} className="muted">
+                                  데이터 없음
+                                </td>
+                              </tr>
+                            ) : (
+                              <>
+                                {monthOverallCostByAccount.accountRows.map((row) => (
+                                  <tr key={`overall-cost-account-${normalize(row.label)}`}>
+                                    <td>{row.label}</td>
+                                    <td>{money.format(row.amount)}</td>
+                                  </tr>
+                                ))}
+                                {monthOverallCostByAccount.adjustmentRows.map((row) => (
+                                  <tr key={`overall-cost-adj-${normalize(row.label)}`}>
+                                    <td>{row.label}</td>
+                                    <td>{money.format(row.amount)}</td>
+                                  </tr>
+                                ))}
+                                <tr className="pnl-total-row">
+                                  <td>전체 합계</td>
+                                  <td>{money.format(monthOverallCostByAccount.costTotal)}</td>
+                                </tr>
+                              </>
+                            )}
+                          </tbody>
+                        </table>
+                      )}
                     </div>
                     <br />
                     <div className="pnl-section">

@@ -760,6 +760,29 @@ button {
   flex-wrap: wrap;
 }
 
+.overall-cost-filter {
+  appearance: none;
+  border: none;
+  background: transparent;
+  padding: 0;
+  margin: 0;
+  box-shadow: none;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 400;
+  color: #94a3b8;
+  cursor: pointer;
+}
+
+.overall-cost-filter:hover {
+  color: #64748b;
+}
+
+.overall-cost-filter-active {
+  color: #64748b;
+  font-weight: 600;
+}
+
 .pnl-sub-meta {
   margin: 0 0 8px;
   font-size: 12px;
