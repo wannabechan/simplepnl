@@ -1758,6 +1758,15 @@ const App = ({ onLogout }: AppProps) => {
       rows.filter((row) => row.payStatus === "비결제").reduce((sum, row) => sum + row.totalAmount, 0),
     );
   }, [activeStore?.costEntryRows]);
+  const costVendorHighlightTotalAmount = useMemo(() => {
+    const rows = activeStore?.costEntryRows ?? [];
+    if (costVendorHighlightIds.size === 0) return 0;
+    return Math.round(
+      rows
+        .filter((row) => costVendorHighlightIds.has(row.id))
+        .reduce((sum, row) => sum + row.totalAmount, 0),
+    );
+  }, [activeStore?.costEntryRows, costVendorHighlightIds]);
   const pnlSummary = useMemo(() => {
     const salesRows = activeStore?.salesSummaryRows ?? [];
     const salesTotalSupply = Math.round(salesRows.reduce((sum, row) => sum + row.supplyAmount, 0));
@@ -4669,6 +4678,14 @@ const App = ({ onLogout }: AppProps) => {
                           </span>
                         )}
                         <span className="sales-heading-grow" />
+                        {costVendorHighlightIds.size > 0 && (
+                          <>
+                            <span className="sales-sum-inline cost-vendor-selected-sum">
+                              선택 금액 합 : ₩{money.format(costVendorHighlightTotalAmount)}
+                            </span>
+                            <span aria-hidden={true}>{"\u00A0\u00A0"}</span>
+                          </>
+                        )}
                         <button
                           type="button"
                           className="btn-secondary"

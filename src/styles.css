@@ -323,6 +323,10 @@ button {
   white-space: nowrap;
 }
 
+.cost-vendor-selected-sum {
+  color: #b91c1c;
+}
+
 .data-table {
   width: 100%;
   border-collapse: collapse;
