@@ -1575,8 +1575,12 @@ const App = ({ onLogout }: AppProps) => {
   const [costEntryBusy, setCostEntryBusy] = useState(false);
   /** 매장별 데이터 패널 탭 */
   const [storeDataTab, setStoreDataTab] = useState<"sales" | "products" | "costs">("sales");
-  /** 비용 등록 탭: 업체명 셀 클릭 하이라이트(탭 이탈 시 초기화) */
+  /** 비용 등록 탭: 업체명 셀 클릭 하이라이트(비결제만 유지, 탭 이탈 시 초기화) */
   const [costVendorHighlightIds, setCostVendorHighlightIds] = useState<Set<string>>(() => new Set());
+  const [costVendorMarkedIds, setCostVendorMarkedIds] = useState<Set<string>>(() => new Set());
+  const [costVendorFadingIds, setCostVendorFadingIds] = useState<Set<string>>(() => new Set());
+  const costVendorFlashTimeoutsRef = useRef<Map<string, number>>(new Map());
+  const costVendorFadeTimeoutsRef = useRef<Map<string, number>>(new Map());
   const [pnlRevenueAdjustmentLabel, setPnlRevenueAdjustmentLabel] = useState("");
   const [pnlRevenueAdjustmentAmount, setPnlRevenueAdjustmentAmount] = useState("0");
   const [pnlCostAdjustmentLabel, setPnlCostAdjustmentLabel] = useState("");
@@ -3597,10 +3601,123 @@ const App = ({ onLogout }: AppProps) => {
     void reconcileCostEvidenceIssuesFromMonthEvidence(runId);
   }, [storeDataTab, activeMonthId, activeStoreId]);
 
+  const clearCostVendorHighlightTimers = (rowId?: string) => {
+    const clearMap = (map: Map<string, number>, id?: string) => {
+      if (id) {
+        const timer = map.get(id);
+        if (timer !== undefined) {
+          window.clearTimeout(timer);
+          map.delete(id);
+        }
+        return;
+      }
+      for (const timer of map.values()) window.clearTimeout(timer);
+      map.clear();
+    };
+    clearMap(costVendorFlashTimeoutsRef.current, rowId);
+    clearMap(costVendorFadeTimeoutsRef.current, rowId);
+  };
+
+  const startCostVendorHighlightFade = (rowId: string) => {
+    const existingFade = costVendorFadeTimeoutsRef.current.get(rowId);
+    if (existingFade !== undefined) {
+      window.clearTimeout(existingFade);
+      costVendorFadeTimeoutsRef.current.delete(rowId);
+    }
+    setCostVendorFadingIds((prev) => {
+      if (prev.has(rowId)) return prev;
+      const next = new Set(prev);
+      next.add(rowId);
+      return next;
+    });
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        setCostVendorMarkedIds((prev) => {
+          if (!prev.has(rowId)) return prev;
+          const next = new Set(prev);
+          next.delete(rowId);
+          return next;
+        });
+      });
+    });
+    const fadeTimer = window.setTimeout(() => {
+      setCostVendorFadingIds((prev) => {
+        if (!prev.has(rowId)) return prev;
+        const next = new Set(prev);
+        next.delete(rowId);
+        return next;
+      });
+      costVendorFadeTimeoutsRef.current.delete(rowId);
+    }, 500);
+    costVendorFadeTimeoutsRef.current.set(rowId, fadeTimer);
+  };
+
+  const onCostVendorCellClick = (row: CostEntryRow) => {
+    const rowId = row.id;
+    const isUnpaid = row.payStatus === "비결제";
+    clearCostVendorHighlightTimers(rowId);
+
+    if (isUnpaid) {
+      if (costVendorHighlightIds.has(rowId)) {
+        setCostVendorHighlightIds((prev) => {
+          const next = new Set(prev);
+          next.delete(rowId);
+          return next;
+        });
+        startCostVendorHighlightFade(rowId);
+        return;
+      }
+      setCostVendorFadingIds((prev) => {
+        if (!prev.has(rowId)) return prev;
+        const next = new Set(prev);
+        next.delete(rowId);
+        return next;
+      });
+      setCostVendorMarkedIds((prev) => {
+        if (prev.has(rowId)) return prev;
+        const next = new Set(prev);
+        next.add(rowId);
+        return next;
+      });
+      setCostVendorHighlightIds((prev) => {
+        if (prev.has(rowId)) return prev;
+        const next = new Set(prev);
+        next.add(rowId);
+        return next;
+      });
+      return;
+    }
+
+    setCostVendorFadingIds((prev) => {
+      if (!prev.has(rowId)) return prev;
+      const next = new Set(prev);
+      next.delete(rowId);
+      return next;
+    });
+    setCostVendorMarkedIds((prev) => {
+      if (prev.has(rowId)) return prev;
+      const next = new Set(prev);
+      next.add(rowId);
+      return next;
+    });
+    const flashTimer = window.setTimeout(() => {
+      costVendorFlashTimeoutsRef.current.delete(rowId);
+      startCostVendorHighlightFade(rowId);
+    }, 200);
+    costVendorFlashTimeoutsRef.current.set(rowId, flashTimer);
+  };
+
   useEffect(() => {
     if (storeDataTab === "costs") return;
+    clearCostVendorHighlightTimers();
     setCostVendorHighlightIds(new Set());
+    setCostVendorMarkedIds(new Set());
+    setCostVendorFadingIds(new Set());
   }, [storeDataTab]);
+
+  useEffect(() => {
+    return () => clearCostVendorHighlightTimers();
+  }, []);
 
   useEffect(() => {
     if (!pnlCostDetailAccount) return;
@@ -4736,19 +4853,14 @@ const App = ({ onLogout }: AppProps) => {
                                 </td>
                                 <td>{row.expenseKind}</td>
                                 <td
-                                  className={
-                                    costVendorHighlightIds.has(row.id)
-                                      ? "cost-vendor-cell cost-vendor-cell-marked"
-                                      : "cost-vendor-cell"
-                                  }
-                                  onClick={() => {
-                                    setCostVendorHighlightIds((prev) => {
-                                      const next = new Set(prev);
-                                      if (next.has(row.id)) next.delete(row.id);
-                                      else next.add(row.id);
-                                      return next;
-                                    });
-                                  }}
+                                  className={[
+                                    "cost-vendor-cell",
+                                    costVendorMarkedIds.has(row.id) ? "cost-vendor-cell-marked" : "",
+                                    costVendorFadingIds.has(row.id) ? "cost-vendor-cell-fading" : "",
+                                  ]
+                                    .filter(Boolean)
+                                    .join(" ")}
+                                  onClick={() => onCostVendorCellClick(row)}
                                 >
                                   {row.vendorName}
                                 </td>

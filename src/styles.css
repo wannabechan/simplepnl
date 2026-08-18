@@ -548,10 +548,15 @@ button {
 .data-table-costs .cost-vendor-cell {
   cursor: pointer;
   user-select: none;
+  background-color: transparent;
 }
 
 .data-table-costs .cost-vendor-cell-marked {
-  background: #fecaca;
+  background-color: #fecaca;
+}
+
+.data-table-costs .cost-vendor-cell-fading {
+  transition: background-color 0.5s ease;
 }
 
 .data-table-products {
