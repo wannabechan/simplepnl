@@ -450,6 +450,14 @@ const parseCostFile = async (file: File): Promise<CostEntryRow[]> => {
     .map((r) => normalizeCostEntryRow(r as Partial<CostEntryRow>));
 };
 
+/** 카드 내역: 승인번호가 숫자 코드인지 (빈 값·헤더 문구·비숫자 행 제외) */
+const isValidCardApprovalNumber = (value: string): boolean => {
+  const v = value.trim();
+  if (!v) return false;
+  if (normalize(v) === normalize("승인번호")) return false;
+  return /^\d+$/.test(v);
+};
+
 const parseCardFile = async (file: File): Promise<CardHistoryRow[]> => {
   const buffer = await file.arrayBuffer();
   const workbook = XLSX.read(buffer, { type: "array" });
@@ -491,17 +499,7 @@ const parseCardFile = async (file: File): Promise<CardHistoryRow[]> => {
         appliedStore: "",
       };
     })
-    .filter((r) => {
-      return (
-        r.usedDate !== "" ||
-        r.approvalNumber !== "" ||
-        r.usedCard !== "" ||
-        r.merchant !== "" ||
-        r.salesType !== "" ||
-        r.approvalAmount !== 0 ||
-        r.paymentAmount !== 0
-      );
-    });
+    .filter((r) => isValidCardApprovalNumber(r.approvalNumber));
 };
 
 const parseEvidenceFile = async (
