@@ -585,11 +585,8 @@ const mergeAndSortCardRows = (
   incoming: CardHistoryRow[],
 ): CardHistoryRow[] => {
   const byKey = new Map<string, CardHistoryRow>();
-  for (const row of existing) {
-    const key = `${row.approvalNumber}::${row.usedCard}`;
-    byKey.set(key, row);
-  }
-  for (const row of incoming) {
+  for (const row of [...existing, ...incoming]) {
+    if (!isValidCardApprovalNumber(row.approvalNumber)) continue;
     const key = `${row.approvalNumber}::${row.usedCard}`;
     byKey.set(key, row);
   }
@@ -783,7 +780,9 @@ const normalizeStore = (raw: unknown): StoreRecord => {
 const migrateMonthRecord = (raw: Record<string, unknown>): MonthRecord => {
   const stores = Array.isArray(raw.stores) ? (raw.stores as unknown[]).map(normalizeStore) : [];
   const cardHistoryRows = Array.isArray(raw.cardHistoryRows)
-    ? (raw.cardHistoryRows as Partial<CardHistoryRow>[]).map(normalizeCardHistoryRow)
+    ? (raw.cardHistoryRows as Partial<CardHistoryRow>[])
+        .map(normalizeCardHistoryRow)
+        .filter((r) => isValidCardApprovalNumber(r.approvalNumber))
     : undefined;
   const evidenceRows = Array.isArray(raw.evidenceRows)
     ? (raw.evidenceRows as Partial<EvidenceRow>[]).map(normalizeEvidenceRow)
