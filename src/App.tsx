@@ -300,8 +300,9 @@ const parseSalesFile = async (file: File): Promise<SalesSummaryRow[]> => {
   return rows
     .map((row) => {
       const businessDay = formatBusinessDay(findCell(row, ["영업일", "일자", "날짜"]));
-      const total = toNumber(findCell(row, ["합계"]));
+      /** 구·신 포맷 공통: 합계 열 대신 결제 금액을 합계/결제금액으로 사용 */
       const paymentAmount = toNumber(findCell(row, ["결제금액", "결제 금액"]));
+      const total = paymentAmount;
       const supplyAmount = toNumber(findCell(row, ["공급가액"]));
       const vat = toNumber(findCell(row, ["부가세"]));
       const discount = toNumber(findCell(row, ["할인"]));
@@ -320,17 +321,7 @@ const parseSalesFile = async (file: File): Promise<SalesSummaryRow[]> => {
         manualOrder: 0,
       };
     })
-    .filter((r) => {
-      return (
-        r.businessDay !== "" ||
-        r.paymentMethod !== "" ||
-        r.total !== 0 ||
-        r.paymentAmount !== 0 ||
-        r.supplyAmount !== 0 ||
-        r.vat !== 0 ||
-        r.discount !== 0
-      );
-    });
+    .filter((r) => r.businessDay !== "");
 };
 
 const parseProductFile = async (file: File): Promise<ProductSummaryRow[]> => {
@@ -2926,7 +2917,7 @@ const App = ({ onLogout }: AppProps) => {
       await new Promise((r) => requestAnimationFrame(() => r(undefined)));
       setSalesModalProgress("시트에서 행을 불러오는 중…");
       const rows = await parseSalesFile(file);
-      setSalesModalProgress("영업일·합계·결제금액 등 컬럼을 확인하는 중…");
+      setSalesModalProgress("영업일·결제금액 등 컬럼을 확인하는 중…");
       await new Promise((r) => setTimeout(r, 200));
       setSalesParsedRows(rows);
       setSalesModalPhase("ready");
