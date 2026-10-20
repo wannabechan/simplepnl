@@ -2864,6 +2864,24 @@ const App = ({ onLogout }: AppProps) => {
     closeCostEntryModal();
   };
 
+  const onCostSummaryDeleteAll = async () => {
+    if (!activeStore) return;
+    const count = activeStore.costEntryRows?.length ?? 0;
+    if (count === 0) return;
+    if (!window.confirm("선택 매장, 선택 월의 비용 등록 데이터를 초기화하시겠습니까?")) return;
+    setCostEntryBusy(true);
+    const result = await persistAllCostRows([]);
+    setCostEntryBusy(false);
+    if (!result.ok) {
+      window.alert(result.message);
+      return;
+    }
+    clearCostVendorHighlightTimers();
+    setCostVendorHighlightIds(new Set());
+    setCostVendorMarkedIds(new Set());
+    setCostVendorFadingIds(new Set());
+  };
+
   const openSalesUploadModal = () => {
     if (!activeMonthId || !activeStoreId || !activeStore) return;
     if (salesModalOpen || productModalOpen || costModalOpen || salesEntryModalOpen || cardModalOpen) return;
@@ -4791,6 +4809,22 @@ const App = ({ onLogout }: AppProps) => {
                             <span aria-hidden={true}>{"\u00A0\u00A0"}</span>
                           </>
                         )}
+                        <button
+                          type="button"
+                          className="btn-secondary"
+                          disabled={
+                            salesModalOpen ||
+                            productModalOpen ||
+                            costModalOpen ||
+                            cardModalOpen ||
+                            costEntryBusy ||
+                            (activeStore.costEntryRows?.length ?? 0) === 0
+                          }
+                          onClick={() => void onCostSummaryDeleteAll()}
+                        >
+                          전체 삭제
+                        </button>
+                        <span aria-hidden={true}>{"\u00A0\u00A0"}</span>
                         <button
                           type="button"
                           className="btn-secondary"
